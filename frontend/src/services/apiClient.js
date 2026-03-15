@@ -42,7 +42,6 @@ apiClient.interceptors.response.use(
       return apiClient(originalRequest);
     } catch {
       processQueue(new Error("refresh failed"));
-      window.location.href = "/login";
       return Promise.reject(error);
     } finally {
       isRefreshing = false;

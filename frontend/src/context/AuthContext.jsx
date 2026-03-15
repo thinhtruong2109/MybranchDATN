@@ -23,12 +23,9 @@ export function AuthProvider({ children }) {
       .finally(() => {
         setUser(null);
         setIsLoading(false);
-        const path = window.location.pathname;
-        if (path !== "/login" && path !== "/auth/callback") {
-          window.location.href = "/login";
-        }
+        navigate("/login", { replace: true });
       });
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,12 +39,6 @@ export function AuthProvider({ children }) {
       .catch((err) => {
         if (cancelled) return;
         setUser(null);
-        if (err.response && err.response.status === 401) {
-          const path = window.location.pathname;
-          if (path !== "/login" && path !== "/auth/callback") {
-            window.location.href = "/login";
-          }
-        }
       })
       .finally(() => {
         if (cancelled) return;
