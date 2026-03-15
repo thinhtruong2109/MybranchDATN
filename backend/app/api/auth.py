@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+import secrets
 from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, status, Cookie
+from fastapi import APIRouter, Depends, Header, HTTPException, status, Cookie, Response
 from fastapi.responses import RedirectResponse
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
@@ -22,6 +23,7 @@ from app.core.config import (
     JWT_EXPIRE_MINUTES,
     JWT_SECRET_KEY,
     ENV,
+    FRONTEND_AUTH_CALLBACK_URL,
 )
 from app.core.database import get_db
 from app.models.user import User
@@ -32,7 +34,6 @@ router = APIRouter(tags=["auth"])
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
-FRONTEND_AUTH_CALLBACK_URL = "http://localhost:5173/auth/callback"
 
 
 def _require_config() -> None:
@@ -142,15 +143,38 @@ async def google_login():
         "include_granted_scopes": "true",
         "prompt": "select_account",
     }
+    # CSRF protection: generate state, store in a cookie, and include in params
+    state = secrets.token_urlsafe(32)
+    params["state"] = state
     url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
-    return RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    response = RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    secure_flag = True if ENV == "prod" else False
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        httponly=True,
+        secure=secure_flag,
+        samesite="lax",
+        max_age=60 * 5,  # short-lived state cookie (5 minutes)
+        path="/",
+    )
+    return response
 
 
 @router.get("/auth/google/callback")
-async def google_callback(code: Optional[str] = None, db: Session = Depends(get_db)):
+async def google_callback(
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    oauth_state: Optional[str] = Cookie(default=None, alias="oauth_state"),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
     _require_config()
     if not code:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing 'code' from Google.")
+
+    # Verify OAuth2 state to prevent CSRF (login CSRF)
+    if not state or not oauth_state or state != oauth_state:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or missing OAuth state.")
 
     async with httpx.AsyncClient(timeout=20) as client:
         token_resp = await client.post(
@@ -238,17 +262,22 @@ async def google_callback(code: Optional[str] = None, db: Session = Depends(get_
     response = RedirectResponse(url=FRONTEND_AUTH_CALLBACK_URL, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
     # In production, require Secure; in dev allow insecure cookie for localhost
     secure_flag = True if ENV == "prod" else False
-    # For cross-site XHR with real HTTPS deployments you'd want SameSite=None and Secure=True.
-    # For local dev over HTTP we use SameSite=lax and secure=False so the browser accepts the cookie.
+    # Align cookie lifetime with JWT expiry
+    try:
+        cookie_max_age = int(JWT_EXPIRE_MINUTES) * 60
+    except Exception:
+        cookie_max_age = 60 * 60 * 2
     response.set_cookie(
         key="access_token",
         value=token,
         httponly=True,
         secure=secure_flag,
         samesite="lax",
-        max_age=60 * 60 * 2,  # 2 hours
+        max_age=cookie_max_age,
         path="/",
     )
+    # Delete the temporary oauth_state cookie
+    response.delete_cookie("oauth_state", path="/")
     return response
 
 
@@ -263,3 +292,12 @@ async def me(current_user: User = Depends(get_current_user)):
         "created_at": current_user.created_at,
         "last_login_at": current_user.last_login_at,
     }
+
+
+@router.post("/auth/logout")
+async def logout(response: Response):
+    # Clear auth cookies on logout
+    secure_flag = True if ENV == "prod" else False
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("oauth_state", path="/")
+    return {"ok": True}

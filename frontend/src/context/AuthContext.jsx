@@ -17,13 +17,17 @@ export function AuthProvider({ children }) {
   const navigate = useNavigate();
 
   const logout = useCallback(() => {
-    setUser(null);
-    setIsLoading(false);
-    // Only redirect if not already on login or callback page
-    const path = window.location.pathname;
-    if (path !== "/login" && path !== "/auth/callback") {
-      window.location.href = "/login";
-    }
+    // Call backend to clear server-side cookie, then clear client state
+    apiClient
+      .post("/auth/logout")
+      .finally(() => {
+        setUser(null);
+        setIsLoading(false);
+        const path = window.location.pathname;
+        if (path !== "/login" && path !== "/auth/callback") {
+          window.location.href = "/login";
+        }
+      });
   }, []);
 
   useEffect(() => {
