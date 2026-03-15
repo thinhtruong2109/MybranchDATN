@@ -24,6 +24,8 @@ from app.core.config import (
     JWT_SECRET_KEY,
     ENV,
     FRONTEND_AUTH_CALLBACK_URL,
+    REFRESH_TOKEN_SECRET_KEY,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from app.core.database import get_db
 from app.models.user import User
@@ -62,6 +64,17 @@ def _create_access_token(*, user: User) -> str:
         "iat": now,
     }
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def _create_refresh_token(*, user: User) -> str:
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "sub":  str(user.id),
+        "type": "refresh",
+        "exp":  now + timedelta(days=int(REFRESH_TOKEN_EXPIRE_DAYS)),
+        "iat":  now,
+    }
+    return jwt.encode(payload, REFRESH_TOKEN_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 
 def _decode_token(token: str) -> dict[str, Any]:
@@ -258,27 +271,70 @@ async def google_callback(
     db.commit()
     db.refresh(user)
 
-    token = _create_access_token(user=user)
+    access_token = _create_access_token(user=user)
+    refresh_token = _create_refresh_token(user=user)
+
     response = RedirectResponse(url=FRONTEND_AUTH_CALLBACK_URL, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
     # In production, require Secure; in dev allow insecure cookie for localhost
     secure_flag = True if ENV == "prod" else False
-    # Align cookie lifetime with JWT expiry
-    try:
-        cookie_max_age = int(JWT_EXPIRE_MINUTES) * 60
-    except Exception:
-        cookie_max_age = 60 * 60 * 2
     response.set_cookie(
-        key="access_token",
-        value=token,
+        "access_token",
+        access_token,
         httponly=True,
         secure=secure_flag,
         samesite="lax",
-        max_age=cookie_max_age,
+        max_age=int(JWT_EXPIRE_MINUTES) * 60,
         path="/",
     )
-    # Delete the temporary oauth_state cookie
+    response.set_cookie(
+        "refresh_token",
+        refresh_token,
+        httponly=True,
+        secure=secure_flag,
+        samesite="lax",
+        max_age=int(REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60,
+        path="/api/auth",
+    )
     response.delete_cookie("oauth_state", path="/")
     return response
+
+
+@router.post("/auth/refresh")
+async def refresh_access_token(
+    response: Response,
+    refresh_token_cookie: Optional[str] = Cookie(default=None, alias="refresh_token"),
+    db: Session = Depends(get_db),
+):
+    if not refresh_token_cookie:
+        raise HTTPException(status_code=401, detail="Missing refresh token.")
+
+    try:
+        payload = jwt.decode(refresh_token_cookie, REFRESH_TOKEN_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    except ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired. Please log in again.")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token.")
+
+    if payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type.")
+
+    user_id = UUID(str(payload.get("sub")))
+    user = db.scalar(select(User).where(User.id == user_id))
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or deactivated.")
+
+    new_access_token = _create_access_token(user=user)
+    secure_flag = True if ENV == "prod" else False
+    response.set_cookie(
+        "access_token",
+        new_access_token,
+        httponly=True,
+        secure=secure_flag,
+        samesite="lax",
+        max_age=int(JWT_EXPIRE_MINUTES) * 60,
+        path="/",
+    )
+    return {"ok": True}
 
 
 @router.get("/auth/me")
