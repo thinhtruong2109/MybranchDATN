@@ -293,7 +293,7 @@ async def google_callback(
         secure=secure_flag,
         samesite="lax",
         max_age=int(REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60,
-        path="/api/auth",
+        path="/",
     )
     response.delete_cookie("oauth_state", path="/")
     return response
