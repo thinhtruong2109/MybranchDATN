@@ -20,7 +20,19 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-      
+
+  redis:
+    image: redis:7-alpine
+    container_name: synergia_redis_dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ../../backend
     container_name: synergia_backend_dev
@@ -31,17 +43,55 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
     volumes:
     - ../../backend:/app
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    image: python:3.11-slim
+    container_name: synergia_worker_dev
+    working_dir: /worker
+    env_file:
+      - .env.dev
+    environment:
+      - PYTHONPATH=/backend:/worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    volumes:
+      - ../../worker:/worker
+      - ../../backend:/backend
+    command: >
+      sh -c "pip install -r /backend/requirements.txt &&
+             pip install rq && 
+             python worker.py"
 
   frontend:
-    build: ../../frontend
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile.dev # Sử dụng file dev vừa tạo
     container_name: synergia_frontend_dev
     ports:
-      - "${FRONTEND_PORT}:80"
+      - "${FRONTEND_PORT}:3000" # Ánh xạ port Vite (5173) ra ngoài
+    env_file:
+      - .env.dev  # Docker sẽ đọc file này
+    volumes:
+      - ../../frontend:/app          # Mount code để Hot Reload
+      - /app/node_modules            # Giữ node_modules bên trong container
+    environment:
+      - CHOKIDAR_USEPOLLING=true    # Hỗ trợ thêm cho việc watch 
+      - WATCHPACK_POLLING=true
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL}
     depends_on:
       - backend
       

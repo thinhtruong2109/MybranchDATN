@@ -1,8 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { PaperList } from "../components/PaperList.jsx";
-import { PaperDetail } from "../components/PaperDetail.jsx";
-import { getPapers, getPaperDetail } from "../services/paperApi.js";
+import { getPapers } from "../services/paperApi.js";
 
 const MOCK_PAPERS = [
   {
@@ -103,13 +102,18 @@ function mapPaperDetail(detail) {
     parseError: detail.parse_error,
     extractedTextPreview: detail.extracted_text_preview,
     detectedDoi: detail.detected_doi,
+    detectedFingerprint: detail.detected_fingerprint,
     detectedTitle: detail.detected_title,
 
     // fallback
     authors: [],
     year: null,
     venue: null,
-    canonicalKey: detail.detected_doi || detail.canonical_document_id || "",
+    canonicalKey:
+      detail.detected_doi ||
+      detail.detected_fingerprint ||
+      detail.canonical_document_id ||
+      "",
     hasDeterministicParse: detail.parse_status === "success",
     hasCanonicalMetadata: !!detail.canonical_document_id,
     hasLLMExtraction: false,
@@ -117,14 +121,21 @@ function mapPaperDetail(detail) {
 }
 
 export function PaperDashboard() {
-  const [papers, setPapers] = useState(MOCK_PAPERS);
-  const [selectedPaper, setSelectedPaper] = useState(null);
+  const [papers, setPapers] = useState([]);
   const [loadingList, setLoadingList] = useState(true);
-  const [loadingDetail, setLoadingDetail] = useState(false);
   const [listError, setListError] = useState("");
-  const [detailError, setDetailError] = useState("");
-  const { paperId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation(); // Hook để lấy state từ router
+  const [successMessage, setSuccessMessage] = useState("");
+
+  useEffect(() => {
+    if (location.state?.message) {
+      setSuccessMessage(location.state.message);
+      const timer = setTimeout(() => setSuccessMessage(""), 5000);
+      window.history.replaceState({}, document.title);
+      return () => clearTimeout(timer);
+    }
+  }, [location]);
 
   useEffect(() => {
     let isMounted = true;
@@ -140,11 +151,6 @@ export function PaperDashboard() {
 
         const mapped = data.map(mapPaperListItem);
         setPapers(mapped);
-
-        // nếu chưa có paperId trên URL thì tự chọn paper đầu tiên
-        if (!paperId && mapped.length > 0) {
-          navigate(`/papers/${mapped[0].id}`, { replace: true });
-        }
       } catch (error) {
         if (!isMounted) return;
         setListError(error.message || "Không thể tải danh sách paper");
@@ -160,59 +166,7 @@ export function PaperDashboard() {
     return () => {
       isMounted = false;
     };
-  }, [paperId, navigate]);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadPaperDetail() {
-      if (!paperId) {
-        setSelectedPaper(null);
-        return;
-      }
-
-      try {
-        setLoadingDetail(true);
-        setDetailError("");
-
-        const detail = await getPaperDetail(paperId);
-
-        if (!isMounted) return;
-
-        setSelectedPaper(mapPaperDetail(detail));
-      } catch (error) {
-        if (!isMounted) return;
-        setDetailError(error.message || "Không thể tải chi tiết paper");
-        setSelectedPaper(null);
-      } finally {
-        if (isMounted) {
-          setLoadingDetail(false);
-        }
-      }
-    }
-
-    loadPaperDetail();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [paperId]);
-
-  function handleSelect(id) {
-    navigate(`/papers/${id}`);
-  }
-
-  const selectedId = paperId ?? (papers[0]?.id ?? null);
-
-  const selectedPaperFromList = useMemo(
-    () => papers.find((p) => p.id === selectedId) ?? null,
-    [papers, selectedId]
-  );
-
-  // const selectedPaper = useMemo(
-  //   () => papers.find((p) => p.id === selectedId) ?? null,
-  //   [papers, selectedId]
-  // );
+  }, []);
 
   return (
     <div className="app-shell">
@@ -239,6 +193,22 @@ export function PaperDashboard() {
 
       <main className="app-main app-main--papers">
         <div className="app-main__full">
+          {successMessage && (
+            <div className="card" style={{ 
+              backgroundColor: "#f0fdf4", 
+              color: "#16a34a", 
+              padding: "1rem", 
+              marginBottom: "1rem",
+              border: "1px solid #bbf7d0",
+              borderRadius: "8px",
+              display: "flex",
+              justifyContent: "space-between"
+            }}>
+              <span>{successMessage}</span>
+              <button onClick={() => setSuccessMessage("")} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#16a34a' }}>✕</button>
+            </div>
+          )}
+
           {loadingList ? (
             <div className="card" style={{ padding: "1rem" }}>
               Đang tải danh sách tài liệu...
@@ -248,24 +218,7 @@ export function PaperDashboard() {
               {listError}
             </div>
           ) : (
-            <PaperList
-              papers={papers}
-              onSelect={handleSelect}
-              selectedId={selectedId}
-            />
-          )}
-        </div>
-        <div className="app-main__below">
-          {loadingDetail ? (
-            <div className="card" style={{ padding: "1rem" }}>
-              Đang tải chi tiết tài liệu...
-            </div>
-          ) : detailError ? (
-            <div className="card" style={{ padding: "1rem", color: "#dc2626" }}>
-              {detailError}
-            </div>
-          ) : (
-            <PaperDetail paper={selectedPaper || selectedPaperFromList} />
+            <PaperList papers={papers} />
           )}
         </div>
       </main>

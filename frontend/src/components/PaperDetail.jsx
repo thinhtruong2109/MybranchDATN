@@ -1,4 +1,5 @@
 import { PaperStatusBadge } from "./PaperStatusBadge.jsx";
+import { ProcessingTimeline } from "./ProcessingTimeline.jsx";
 import { formatDate } from "../utils/formatDate.js";
 
 function formatSizeMB(sizeMB) {
@@ -35,28 +36,13 @@ export function PaperDetail({ paper }) {
       : "Đã có thông tin chi tiết của tài liệu";
 
   const parseDisplay =
-    paper.parseStatus === "success"
+    paper.parseStatus === "done"
       ? "Đã parse thành công"
       : paper.parseStatus === "failed"
       ? "Parse thất bại"
       : "Chưa parse";
 
   const canonicalDisplay = paper.canonicalDocumentId ? "Đã liên kết" : "Chưa có";
-
-  const timelineParseClass =
-    paper.parseStatus === "success"
-      ? "timeline__item timeline__item--done"
-      : paper.status === "failed" || paper.parseStatus === "failed"
-      ? "timeline__item timeline__item--failed"
-      : "timeline__item timeline__item--pending";
-
-  const timelineCanonicalClass = paper.canonicalDocumentId
-    ? "timeline__item timeline__item--done"
-    : "timeline__item timeline__item--pending";
-
-  const timelineLLMClass = paper.hasLLMExtraction
-    ? "timeline__item timeline__item--done"
-    : "timeline__item timeline__item--pending";
 
   return (
     <section className="card detail-card">
@@ -67,6 +53,8 @@ export function PaperDetail({ paper }) {
         </div>
         <PaperStatusBadge status={paper.status} />
       </header>
+
+      <ProcessingTimeline paper={paper} />
 
       <div className="detail-grid">
         <div className="detail-section">
@@ -106,10 +94,6 @@ export function PaperDetail({ paper }) {
               <dt>Upload source</dt>
               <dd>{paper.uploadSource || "-"}</dd>
             </div>
-            <div className="detail-list__item">
-              <dt>Storage path</dt>
-              <dd>{paper.storagePath || "-"}</dd>
-            </div>
           </dl>
         </div>
 
@@ -123,6 +107,10 @@ export function PaperDetail({ paper }) {
             <div className="detail-list__item">
               <dt>Detected DOI</dt>
               <dd>{paper.detectedDoi || "-"}</dd>
+            </div>
+            <div className="detail-list__item">
+              <dt>Detected fingerprint</dt>
+              <dd>{paper.detectedFingerprint || "-"}</dd>
             </div>
             <div className="detail-list__item">
               <dt>Parse status</dt>
@@ -139,26 +127,6 @@ export function PaperDetail({ paper }) {
             <div className="detail-list__item">
               <dt>Canonical document ID</dt>
               <dd>{paper.canonicalDocumentId || "-"}</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div className="detail-section">
-          <h3 className="detail-section__title">Dấu vết lưu trữ</h3>
-          <dl className="detail-list">
-            <div className="detail-list__item">
-              <dt>Uploader ID</dt>
-              <dd>{paper.uploaderId || "-"}</dd>
-            </div>
-            <div className="detail-list__item">
-              <dt>SHA256</dt>
-              <dd
-                style={{
-                  wordBreak: "break-all",
-                }}
-              >
-                {paper.fileHashSha256 || "-"}
-              </dd>
             </div>
           </dl>
         </div>
@@ -183,51 +151,6 @@ export function PaperDetail({ paper }) {
           </div>
         </div>
       )}
-
-      <div className="detail-section">
-        <h3 className="detail-section__title">Luồng xử lý tài liệu</h3>
-        <ol className="timeline">
-          <li className="timeline__item timeline__item--done">
-            <div className="timeline__dot" />
-            <div className="timeline__content">
-              <div className="timeline__title">Uploaded</div>
-              <div className="timeline__description">
-                File đã được nhận và lưu vào storage.
-              </div>
-            </div>
-          </li>
-
-          <li className={timelineParseClass}>
-            <div className="timeline__dot" />
-            <div className="timeline__content">
-              <div className="timeline__title">PDF parsing</div>
-              <div className="timeline__description">
-                Trích xuất text preview, DOI và title candidate từ PDF.
-              </div>
-            </div>
-          </li>
-
-          <li className={timelineCanonicalClass}>
-            <div className="timeline__dot" />
-            <div className="timeline__content">
-              <div className="timeline__title">Canonical document</div>
-              <div className="timeline__description">
-                Liên kết paper hiện tại với canonical document nếu đã được nhận diện.
-              </div>
-            </div>
-          </li>
-
-          <li className={timelineLLMClass}>
-            <div className="timeline__dot" />
-            <div className="timeline__content">
-              <div className="timeline__title">LLM metadata chuyên biệt</div>
-              <div className="timeline__description">
-                Trích xuất metadata nâng cao kèm evidence khi pipeline giai đoạn sau được bật.
-              </div>
-            </div>
-          </li>
-        </ol>
-      </div>
     </section>
   );
 }

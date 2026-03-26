@@ -31,6 +31,14 @@ CORS_ORIGINS = [
 ]
 
 # =========================
+# GOOGLE
+# =========================
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+# =========================
 # DATABASE
 # =========================
 DB_HOST = get_env("DB_HOST", "127.0.0.1")
@@ -58,6 +66,9 @@ MINIO_ACCESS_KEY = get_env("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = get_env("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = get_env("MINIO_BUCKET", "papers")
 MINIO_SECURE = get_env_bool("MINIO_SECURE", False)
+
+MINIO_PUBLIC_ENDPOINT = get_env("MINIO_PUBLIC_ENDPOINT", "localhost:9000")
+MINIO_PUBLIC_SECURE = get_env_bool("MINIO_PUBLIC_SECURE", False)
 
 # =========================
 # Upload constraints
@@ -89,5 +100,15 @@ if not JWT_SECRET_KEY:
     )
 JWT_ALGORITHM = get_env("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = get_env_int("JWT_EXPIRE_MINUTES", 60 * 24 * 7)  # 7 ngày
+
+# =========================
+# Queue - Redis / RQ
+# =========================
+REDIS_HOST = get_env("REDIS_HOST", "127.0.0.1")
+REDIS_PORT = get_env_int("REDIS_PORT", 6379)
+REDIS_DB = get_env_int("REDIS_DB", 0)
+REDIS_URL = get_env("REDIS_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
+
+RQ_PARSE_QUEUE = get_env("RQ_PARSE_QUEUE", "parse_queue")
 REFRESH_TOKEN_SECRET_KEY  = get_env("REFRESH_TOKEN_SECRET_KEY", "change-refresh-secret")
 REFRESH_TOKEN_EXPIRE_DAYS = get_env_int("REFRESH_TOKEN_EXPIRE_DAYS", 30)
