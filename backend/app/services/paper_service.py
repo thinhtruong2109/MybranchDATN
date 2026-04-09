@@ -11,6 +11,7 @@ from app.repositories.paper_repository import PaperRepository
 from app.services.queue_service import QueueService
 from app.services.storage_service import StorageService
 
+
 class PaperService:
     def __init__(self, db: Session):
         self.db = db
@@ -75,9 +76,10 @@ class PaperService:
             file_size_bytes=len(content),
             file_hash_sha256=file_hash_sha256,
             upload_source="portal",
-            status="uploaded",
-            parse_status=None,
-            parse_error=None,
+            processing_status="pending",
+            processing_stage="uploaded",
+            publication_status="draft",
+            processing_error=None,
             is_duplicate=False,
             duplicate_of_paper_id=None,
         )
@@ -86,22 +88,22 @@ class PaperService:
 
         try:
             self.queue_service.enqueue_pdf_parse(str(paper.id))
-            paper.status = "parse_queued"
-            paper.parse_status = "queued"
-            paper.parse_error = None
+            paper.processing_status = "pending"
+            paper.processing_stage = "queued"
+            paper.processing_error = None
             self.db.commit()
             self.db.refresh(paper)
         except Exception as e:
-            paper.status = "uploaded"
-            paper.parse_status = "failed"
-            paper.parse_error = f"Failed to enqueue parse job: {str(e)}"
+            paper.processing_status = "failed"
+            paper.processing_stage = "uploaded"
+            paper.processing_error = f"Failed to enqueue parse job: {str(e)}"
             self.db.commit()
             self.db.refresh(paper)
 
         return paper
 
     def list_papers(self, skip: int = 0, limit: int = 20):
-        return self.repo.list(skip=skip, limit=limit)
+        return self.repo.list_papers(skip=skip, limit=limit)
 
     def get_paper_detail(self, paper_id):
         paper = self.repo.get_by_id(paper_id)
