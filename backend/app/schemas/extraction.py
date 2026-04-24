@@ -13,6 +13,7 @@ from app.schemas.extraction_result import (
 class ExtractionRunListItemResponse(BaseModel):
     id: UUID
     canonical_document_id: UUID
+    provider: str | None = None
     model_name: str | None = None
     prompt_version: str | None = None
     status: str
@@ -27,6 +28,7 @@ class ExtractionRunListItemResponse(BaseModel):
 class ExtractionRunResponse(BaseModel):
     id: UUID
     canonical_document_id: UUID
+    provider: str | None = None
     model_name: str | None = None
     prompt_version: str | None = None
     status: str
@@ -50,3 +52,10 @@ class ExtractionRunResponse(BaseModel):
     @classmethod
     def none_to_empty_list(cls, v):
         return v or []
+
+
+class ExtractionRetryResponse(BaseModel):
+    message: str
+    paper_id: UUID
+    canonical_document_id: UUID
+    queued_job_id: str

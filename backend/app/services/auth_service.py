@@ -8,12 +8,12 @@ from urllib.parse import urlencode
 from fastapi import HTTPException, status
 
 from app.repositories.user_repository import UserRepository
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.core.config import (
     JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES,
     REFRESH_TOKEN_SECRET_KEY, REFRESH_TOKEN_EXPIRE_DAYS,
     GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ALLOWED_EMAIL_DOMAIN,
-    GOOGLE_TOKEN_URL, GOOGLE_REDIRECT_URI, GOOGLE_USERINFO_URL, GOOGLE_AUTH_URL
+    GOOGLE_TOKEN_URL, GOOGLE_REDIRECT_URI, GOOGLE_USERINFO_URL, GOOGLE_AUTH_URL, ADMIN_EMAILS
 )
 
 class AuthService:
@@ -27,16 +27,26 @@ class AuthService:
                 detail="Google OAuth2 is not configured."
             )
 
+    def is_admin_email(self, email: str) -> bool:
+        normalized_email = email.strip().lower()
+        return normalized_email in {e.strip().lower() for e in ADMIN_EMAILS}
+
     def is_allowed_domain(self, email: str) -> bool:
         domain = (ALLOWED_EMAIL_DOMAIN or "").strip().lower()
         if not domain: return True
         return email.strip().lower().endswith(f"@{domain}")
 
     def create_access_token(self, user: User) -> str:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=int(JWT_EXPIRE_MINUTES))
+        now = datetime.now(timezone.utc)
+        expire = now + timedelta(minutes=int(JWT_EXPIRE_MINUTES))
         payload = {
-            "sub": str(user.id), "email": user.email, 
-            "name": user.full_name, "exp": expire, "iat": datetime.now(timezone.utc)
+            "sub": str(user.id),
+            "email": user.email,
+            "name": user.full_name,
+            "role": user.role,
+            "type": "access",
+            "exp": expire,
+            "iat": now,
         }
         return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
@@ -74,7 +84,7 @@ class AuthService:
             return userinfo_resp.json()
 
     def sync_user(self, info: dict) -> User:
-        email = (info.get("email") or "").strip()
+        email = (info.get("email") or "").strip().lower()
         if not email or not self.is_allowed_domain(email):
             raise HTTPException(status_code=403, detail="Email domain not allowed.")
 
@@ -82,23 +92,34 @@ class AuthService:
         user = self.user_repo.get_by_google_sub(google_sub) or self.user_repo.get_by_email(email)
 
         now = datetime.now(timezone.utc)
+
         if not user:
+            role = UserRole.ADMIN.value if self.is_admin_email(email) else UserRole.USER.value
+
             user = User(
-                email=email, full_name=info.get("name"), 
-                avatar_url=info.get("picture"), google_sub=google_sub,
-                is_active=True, last_login_at=now
+                email=email,
+                full_name=info.get("name"),
+                avatar_url=info.get("picture"),
+                google_sub=google_sub,
+                is_active=True,
+                role=role,
+                last_login_at=now,
             )
             return self.user_repo.create(user)
-        
+
         if not user.is_active:
             raise HTTPException(status_code=403, detail="User is deactivated.")
-            
+
         user.full_name = info.get("name")
         user.avatar_url = info.get("picture")
         user.last_login_at = now
+
+        if google_sub and not user.google_sub:
+            user.google_sub = google_sub
+
         self.user_repo.update()
         return user
-    
+
     def generate_google_login_data(self) -> tuple[str, str]:
         state = secrets.token_urlsafe(32)
         return state, self.build_google_login_url(state)

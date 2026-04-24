@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import sys
 import tempfile
@@ -6,7 +7,7 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 
 sys.path.append("/backend")
-
+from app.services.activity_log_service import ActivityLogService
 from app.core.database import SessionLocal
 from app.models.paper_record import PaperRecord
 from app.models.canonical_document import CanonicalDocument
@@ -16,6 +17,7 @@ from app.services.pdf_parse_service import (
     detect_doi,
     detect_title,
     build_fingerprint,
+    extract_pdf_text_for_llm,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,7 @@ def parse_storage_path(storage_path: str) -> str:
 
 def pdf_parse(paper_id: str) -> None:
     db = SessionLocal()
-
+    activity_service = ActivityLogService(db)
     try:
         paper_uuid = UUID(paper_id)
     except ValueError:
@@ -52,6 +54,12 @@ def pdf_parse(paper_id: str) -> None:
         paper.processing_status = "processing"
         paper.processing_stage = "parsing"
         paper.processing_error = None
+
+        activity_service.log_parse_started(
+            paper_id=paper.id,
+            filename=paper.original_filename,
+        )
+
         db.commit()
 
         # --------------------------------
@@ -72,6 +80,23 @@ def pdf_parse(paper_id: str) -> None:
         full_text, preview = extract_pdf_text_and_preview(tmp_path)
 
         paper.extracted_text_preview = preview
+
+        llm_full_text, llm_preview, pages = extract_pdf_text_for_llm(tmp_path)
+
+        pages_json_bytes = json.dumps(
+            pages,
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        pages_object_name = f"papers/{paper.id}/pages.json"
+
+        pages_storage_path = storage.upload_file_bytes(
+            object_name=pages_object_name,
+            content=pages_json_bytes,
+            content_type="application/json; charset=utf-8",
+        )
+
+        paper.page_text_json_storage_path = pages_storage_path
 
         # --------------------------------
         # 4. detect DOI
@@ -148,6 +173,14 @@ def pdf_parse(paper_id: str) -> None:
         if first_paper and first_paper.id != paper.id:
             paper.is_duplicate = True
             paper.duplicate_of_paper_id = first_paper.id
+
+            activity_service.log_duplicate_detected(
+                paper_id=paper.id,
+                canonical_document_id=canonical.id,
+                canonical_key=canonical.canonical_key,
+                canonical_type=canonical.canonical_type,
+                duplicate_of_paper_id=first_paper.id,
+            )
         else:
             paper.is_duplicate = False
             paper.duplicate_of_paper_id = None  
@@ -158,13 +191,24 @@ def pdf_parse(paper_id: str) -> None:
         paper.processing_status = "processing"
         paper.processing_stage = "parsed"
         paper.processing_error = None
+
+        activity_service.log_parse_completed(
+            paper_id=paper.id,
+            canonical_document_id=canonical.id,
+            filename=paper.original_filename,
+            doi=doi,
+            title=title,
+            canonical_key=canonical.canonical_key,
+            canonical_type=canonical.canonical_type,
+        )
+
         db.commit()
 
         # --------------------------------
         # 10. enqueue Semantic Scholar enrichment
         # --------------------------------
         try:
-            from app.core.queue import parse_queue
+            from app.core.queue import parse_queue, docling_queue
             parse_queue.enqueue(
                 "worker_app.tasks.semantic_scholar.semantic_scholar_enrich",
                 str(canonical.id)
@@ -173,6 +217,22 @@ def pdf_parse(paper_id: str) -> None:
         except Exception as e:
             # Khong lam hong flow chinh neu enqueue that bai
             logger.warning(f"[pdf_parse] Failed to enqueue SS enrichment: {e}")
+
+        try:
+            if not paper.is_duplicate:
+                docling_queue.enqueue(
+                    "tasks.extract_docling_text",
+                    str(paper.id)
+                )
+                logger.info(
+                    f"[pdf_parse] Enqueued Docling extraction for paper_id={paper.id}"
+                )
+            else:
+                logger.info(
+                    f"[pdf_parse] Skip Docling enqueue for duplicate paper_id={paper.id}"
+                )
+        except Exception as e:
+            logger.warning(f"[pdf_parse] Failed to enqueue Docling extraction: {e}")
 
         logger.info(f"[pdf_parse] Completed paper_id={paper_uuid}")
 
@@ -191,6 +251,13 @@ def pdf_parse(paper_id: str) -> None:
                 paper.processing_status = "failed"
                 paper.processing_stage = "parsing"
                 paper.processing_error = str(e)
+
+                activity_service.log_parse_failed(
+                    paper_id=paper.id,
+                    filename=paper.original_filename,
+                    error_message=str(e),
+                )
+
                 db.commit()
         except Exception:
             db.rollback()
