@@ -37,6 +37,12 @@
   color: #b91c1c;
 }
 
+.citation-notice--pending {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
 .citation-graph-wrap {
   border-radius: 14px;
   border: 1px solid #e2e8f0;
@@ -141,12 +147,29 @@
 }
 
 .citation-edge-list {
-  margin-top: 0.8rem;
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-  max-height: 280px;
-  overflow: auto;
+  max-height: 360px;
+  min-height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.2rem;
+}
+
+.citation-edge-list-box {
+  margin-top: 0.8rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.55rem;
+}
+
+.citation-edge-list-box__head {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 0.45rem;
 }
 
 .citation-edge-item {
@@ -215,6 +238,75 @@
   font-weight: 700;
 }
 
+.citation-mention__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.citation-intent-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.69rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.22rem 0.48rem;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.citation-intent-badge--method {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.citation-intent-badge--compare {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.citation-intent-badge--baseline {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.citation-intent-badge--support {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+.citation-intent-badge--background {
+  border-color: #e5e7eb;
+  background: #f9fafb;
+  color: #374151;
+}
+
+.citation-intent-badge--mention {
+  border-color: #fbcfe8;
+  background: #fdf2f8;
+  color: #9d174d;
+}
+
+.citation-intent-badge--unknown {
+  border-color: #d1d5db;
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.citation-mention__intent-score {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #475569;
+}
+
 .citation-mention__snippet {
   font-size: 0.78rem;
   color: #334155;
@@ -247,5 +339,10 @@
 
   .citation-graph-svg {
     height: 520px;
+  }
+
+  .citation-edge-list {
+    max-height: 300px;
+    min-height: 180px;
   }
 }

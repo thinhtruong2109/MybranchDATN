@@ -3,9 +3,12 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from rq.exceptions import NoSuchJobError
+from rq.job import Job
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.queue import redis_conn
 from app.models.canonical_document import CanonicalDocument
 from app.models.citation_edge import CitationEdge
 from app.models.citation_mention import CitationMention
@@ -19,6 +22,7 @@ from app.schemas.citation_graph import (
     CitationEdgeResponse,
     CitationMentionListResponse,
     CitationMentionResponse,
+    CitationQueueJobStatusResponse,
     CitationScoreEnqueueResponse,
     CitationScoreRequest,
     CitationScoreRunResponse,
@@ -310,6 +314,29 @@ def get_citation_network(
             )
         )
 
+    run_meta: dict[str, object] = {}
+    if isinstance(run.weights_json, dict):
+        raw_meta = run.weights_json.get("_run_meta")
+        if isinstance(raw_meta, dict):
+            run_meta = raw_meta
+
+    scoped_source_ids: set[UUID] = set()
+    raw_source_ids = run_meta.get("source_canonical_ids")
+    if isinstance(raw_source_ids, list):
+        for item in raw_source_ids:
+            try:
+                scoped_source_ids.add(UUID(str(item)))
+            except (TypeError, ValueError):
+                continue
+
+    doc_query = db.query(CanonicalDocument)
+    if scoped_source_ids:
+        doc_query = doc_query.filter(CanonicalDocument.id.in_(scoped_source_ids))
+
+    canonical_docs = doc_query.all()
+    for doc in canonical_docs:
+        _ensure_node(doc.id, doc)
+
     nodes = sorted(
         node_map.values(),
         key=lambda item: (item.out_degree + item.in_degree, item.title or ""),
@@ -503,4 +530,34 @@ def get_edge_mentions(
     return CitationMentionListResponse(
         edge=_to_edge_response(edge),
         items=[_to_mention_response(item) for item in mentions],
+    )
+
+
+@router.get(
+    "/jobs/{job_id}/status",
+    response_model=CitationQueueJobStatusResponse,
+    summary="Lay trang thai queue job citation graph",
+)
+def get_citation_job_status(
+    job_id: str,
+):
+    try:
+        job = Job.fetch(job_id, connection=redis_conn)
+    except NoSuchJobError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Citation graph queue job not found.",
+        )
+
+    error_excerpt = None
+    if job.exc_info:
+        error_excerpt = job.exc_info[-1200:]
+
+    return CitationQueueJobStatusResponse(
+        job_id=job.id,
+        status=job.get_status(refresh=True) or "unknown",
+        enqueued_at=job.enqueued_at,
+        started_at=job.started_at,
+        ended_at=job.ended_at,
+        error_excerpt=error_excerpt,
     )

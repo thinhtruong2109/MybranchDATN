@@ -44,6 +44,16 @@ export async function enqueueGlobalCitationRescore({
   }
 }
 
+export async function getCitationRescoreJobStatus(jobId) {
+  try {
+    const response = await apiClient.get(`/api/citation-graph/jobs/${jobId}/status`);
+    return response.data;
+  } catch (error) {
+    const message = await parseApiError(error);
+    throw new Error(message);
+  }
+}
+
 export async function getCitationEdgeMentions(edgeId, limit = 30) {
   try {
     const response = await apiClient.get(`/api/citation-graph/edges/${edgeId}/mentions`, {

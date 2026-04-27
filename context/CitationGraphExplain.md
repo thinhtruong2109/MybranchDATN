@@ -6,6 +6,20 @@
 3. Giải thích được điểm bằng evidence cụ thể (đoạn văn ngữ cảnh).
 4. Cho phép tái tính điểm khi đổi công thức mà vẫn truy vết được lịch sử.
 
+**Cập nhật trạng thái triển khai hiện tại (27-04-2026)**
+1. API citation graph đã chạy với các endpoint chính:
+   1. `POST /citation-graph/runs/score`
+   2. `POST /citation-graph/runs/score/by-paper/{paper_id}`
+   3. `GET /citation-graph/network`
+   4. `GET /citation-graph/edges/{edge_id}/mentions`
+2. Worker có đủ 3 chế độ chấm điểm:
+   1. global
+   2. theo 1 canonical
+   3. theo danh sách source canonical ids
+3. UI `/citation-graph` hiện dùng refresh thủ công (nút "Làm mới mạng"), đã bỏ auto-refresh.
+4. Graph hiện hiển thị cả tài liệu không có cạnh (isolated node), nên người dùng vẫn thấy đầy đủ node trong phạm vi run.
+5. Danh sách cạnh ở panel "Thông tin mạng" được đặt trong khung cuộn, không xổ tràn chiều dài trang.
+
 ---
 
 **Trả lời nhanh: Upload 1 tài liệu thì chuyện gì xảy ra?**
@@ -21,11 +35,19 @@
 2. Chưa hẳn đúng nếu kho đã có tài liệu khác: tài liệu mới có thể trích dẫn tài liệu cũ, khi link được thì sẽ có cạnh outgoing ngay trong lần scoring đó.
 3. Dù không link được nội bộ, hệ thống vẫn có thể lưu mention unresolved ở `citation_mentions` với `target_canonical_id = null`, `is_internal = false` để audit.
 4. Tài liệu mới gần như luôn chưa có incoming edge ở thời điểm vừa upload, vì chưa có tài liệu khác trích nó trong kho nội bộ.
+5. Dù chưa có cạnh, node của tài liệu vẫn được hiển thị trên graph để người dùng có cái nhìn đầy đủ về tập tài liệu trong run.
 
 **Điều kiện để có điểm citation nội bộ**
 1. Tài liệu nguồn phải có chunk retrievable và detect được anchor citation.
 2. Entity linking phải map được mention tới canonical đích nội bộ (`target_canonical_id` khác null).
 3. Mention phải là nội bộ (`is_internal = true`) thì mới được aggregate thành `citation_edges`.
+
+**Cập nhật heuristic linking gần đây (27-04-2026)**
+1. Parser references đã xử lý được prefix markdown list (`- ...`, `* ...`), kể cả format `- [N]`.
+2. Logic trích title reference đã tránh lỗi cắt rỗng khi năm nằm cuối theo format ACL/APA.
+3. Ngưỡng author-year match được nới để tăng recall khi map reference:
+   1. Ngưỡng map chính: 0.45
+   2. Ngưỡng fallback mention: 0.55
 
 ---
 

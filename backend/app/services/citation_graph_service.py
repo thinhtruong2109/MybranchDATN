@@ -1035,7 +1035,7 @@ class CitationGraphService:
             return ref.title_match >= 0.82
 
         if ref.link_method == "author_year":
-            return ref.author_year_match >= 0.75
+            return ref.author_year_match >= 0.55
 
         return False
 
@@ -1125,7 +1125,16 @@ class CitationGraphService:
 
             current_index = None
 
-        for line in reference_lines:
+        for raw_line in reference_lines:
+            line = raw_line.strip()
+            if line.startswith("- ") or line.startswith("* "):
+                line = line[2:].strip()
+
+            if not line:
+                if current_lines:
+                    flush_current()
+                continue
+
             start_match = re.match(r"^(?:\[(\d{1,3})\]|(\d{1,3})[\).])\s+(.*)$", line)
 
             if start_match:
@@ -1210,7 +1219,7 @@ class CitationGraphService:
                     best_overlap = overlap
                     best_target = target
 
-            if best_target and best_overlap >= 0.60:
+            if best_target and best_overlap >= 0.45:
                 entry.target_id = best_target.canonical_id
                 entry.link_method = "author_year"
                 entry.author_year_match = best_overlap
@@ -1782,12 +1791,11 @@ class CitationGraphService:
             return quoted_match.group(1).strip()
 
         cleaned = re.sub(r"^(?:\[\d+\]|\d+[\).])\s*", "", text).strip()
+        if cleaned.startswith("- ") or cleaned.startswith("* "):
+            cleaned = cleaned[2:].strip()
+
         cleaned = DOI_REGEX.sub("", cleaned)
         cleaned = re.sub(r"https?://\S+", "", cleaned)
-
-        year_match = re.search(r"\b(?:19|20)\d{2}[a-z]?\b", cleaned)
-        if year_match:
-            cleaned = cleaned[year_match.end():]
 
         cleaned = cleaned.strip(" .;:-")
         if not cleaned:
@@ -1795,16 +1803,58 @@ class CitationGraphService:
 
         segments = [segment.strip(" .;:-") for segment in re.split(r"\.\s+", cleaned) if segment.strip()]
 
+        venue_keywords = {
+            "vol",
+            "pp",
+            "doi",
+            "arxiv",
+            "corr",
+            "proc",
+            "conference",
+            "journal",
+            "transactions",
+            "workshop",
+            "acl",
+            "emnlp",
+            "naacl",
+            "nips",
+            "icml",
+            "iclr",
+            "aaai",
+            "ieee",
+            "pages",
+            "preprint",
+            "advances",
+            "proceedings",
+        }
+
         for segment in segments:
             lowered = segment.lower()
             if len(segment.split()) < 4:
                 continue
-            if any(token in lowered for token in ["vol", "pp", "doi", "arxiv", "proc", "conference", "journal"]):
+
+            if any(token in lowered for token in venue_keywords):
                 continue
+
+            if re.search(r"\b(?:19|20)\d{2}\b", segment):
+                continue
+
+            comma_count = segment.count(",")
+            word_count = len(segment.split())
+            if comma_count >= 3 and word_count <= 12:
+                continue
+
             return segment[:300]
 
-        if segments:
-            return segments[0][:300]
+        fallback_candidates = [
+            segment
+            for segment in segments
+            if len(segment.split()) >= 4
+            and not re.search(r"\b(?:19|20)\d{2}\b", segment)
+            and not any(token in segment.lower() for token in venue_keywords)
+        ]
+        if fallback_candidates:
+            return max(fallback_candidates, key=len)[:300]
 
         return None
 
@@ -1817,12 +1867,38 @@ class CitationGraphService:
         if year_match:
             head = text[:year_match.start()]
 
-        tokens = re.findall(r"[A-Za-z][A-Za-z'\-]+", head)
-        surnames = {
-            token.lower()
-            for token in tokens
-            if len(token) > 2 and token.lower() not in {"and", "et", "al"}
-        }
+        normalized_head = re.sub(r"\bet\s+al\.?\b", "", head, flags=re.IGNORECASE)
+        normalized_head = re.sub(r"\s+(?:and|&)\s+", ", ", normalized_head, flags=re.IGNORECASE)
+        normalized_head = normalized_head.strip(" .;:-")
+
+        stop_tokens = {"and", "et", "al", "van", "de", "von", "der", "le"}
+        surnames: set[str] = set()
+
+        comma_style_matches = re.findall(
+            r"\b([A-Za-z][A-Za-z'\-]{1,})\s*,\s*(?:[A-Za-z]\.\s*){1,3}",
+            normalized_head,
+        )
+        for surname in comma_style_matches:
+            lowered = surname.lower()
+            if lowered not in stop_tokens:
+                surnames.add(lowered)
+
+        name_parts = [part.strip() for part in normalized_head.split(",") if part.strip()]
+        for part in name_parts:
+            tokens = re.findall(r"[A-Za-z][A-Za-z'\-]+", part)
+            if not tokens:
+                continue
+
+            filtered_tokens = [
+                token.lower()
+                for token in tokens
+                if len(token) > 1 and token.lower() not in stop_tokens
+            ]
+            if not filtered_tokens:
+                continue
+
+            surnames.add(filtered_tokens[-1])
+
         return surnames
 
     def _extract_surnames_from_author_year(self, text: str) -> set[str]:

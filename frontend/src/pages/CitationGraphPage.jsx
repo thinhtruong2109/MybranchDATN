@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { AppHeader } from "../components/AppHeader.jsx";
 import {
   enqueueGlobalCitationRescore,
+  getCitationRescoreJobStatus,
   getCitationEdgeMentions,
   getCitationNetwork,
 } from "../services/citationApi.js";
@@ -15,6 +16,33 @@ const EDGE_COLORS = {
   low: "#64748b",
   medium: "#f59e0b",
   high: "#0ea5a4",
+};
+
+const INTENT_UI = {
+  use_method: {
+    label: "Use Method",
+    tone: "method",
+  },
+  compare: {
+    label: "Compare",
+    tone: "compare",
+  },
+  baseline: {
+    label: "Baseline",
+    tone: "baseline",
+  },
+  support: {
+    label: "Support",
+    tone: "support",
+  },
+  background: {
+    label: "Background",
+    tone: "background",
+  },
+  mention_only: {
+    label: "Mention Only",
+    tone: "mention",
+  },
 };
 
 function trimTitle(text, maxLength = 36) {
@@ -49,6 +77,28 @@ function formatDateTime(value) {
   return date.toLocaleString("vi-VN", {
     hour12: false,
   });
+}
+
+function resolveIntentUi(intentLabel) {
+  const normalized = String(intentLabel || "").trim().toLowerCase();
+  if (!normalized) {
+    return {
+      label: "Unknown",
+      tone: "unknown",
+    };
+  }
+
+  const mapped = INTENT_UI[normalized];
+  if (mapped) {
+    return mapped;
+  }
+
+  return {
+    label: normalized
+      .replaceAll("_", " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase()),
+    tone: "unknown",
+  };
 }
 
 function buildLayout(nodes) {
@@ -152,15 +202,15 @@ export function CitationGraphPage() {
   const [rescoreBusy, setRescoreBusy] = useState(false);
   const [rescoreMessage, setRescoreMessage] = useState("");
   const [rescoreError, setRescoreError] = useState("");
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [rescoreTracking, setRescoreTracking] = useState(false);
+  const [rescoreTrackingJobId, setRescoreTrackingJobId] = useState("");
+  const [rescoreTrackingMessage, setRescoreTrackingMessage] = useState("");
   const [lastLoadedAt, setLastLoadedAt] = useState(null);
 
-  const loadNetwork = useCallback(async ({ silent = false } = {}) => {
+  const loadNetwork = useCallback(async () => {
     try {
-      if (!silent) {
-        setLoading(true);
-        setError("");
-      }
+      setLoading(true);
+      setError("");
 
       const data = await getCitationNetwork({
         minScore,
@@ -175,33 +225,17 @@ export function CitationGraphPage() {
       );
       setLastLoadedAt(new Date().toISOString());
     } catch (fetchError) {
-      if (!silent) {
-        setError(fetchError.message || "Không thể tải mạng trích dẫn.");
-        setNetwork(null);
-        setSelectedEdgeId(null);
-      }
+      setError(fetchError.message || "Không thể tải mạng trích dẫn.");
+      setNetwork(null);
+      setSelectedEdgeId(null);
     } finally {
-      if (!silent) {
-        setLoading(false);
-      }
+      setLoading(false);
     }
   }, [edgeLimit, minScore]);
 
   useEffect(() => {
     loadNetwork();
   }, [loadNetwork]);
-
-  useEffect(() => {
-    if (!autoRefresh) {
-      return undefined;
-    }
-
-    const interval = setInterval(() => {
-      loadNetwork({ silent: true });
-    }, 8000);
-
-    return () => clearInterval(interval);
-  }, [autoRefresh, loadNetwork]);
 
   useEffect(() => {
     if (!selectedEdgeId) {
@@ -239,6 +273,78 @@ export function CitationGraphPage() {
     };
   }, [selectedEdgeId]);
 
+  useEffect(() => {
+    if (!rescoreTracking || !rescoreTrackingJobId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const trackRun = async () => {
+      try {
+        const jobStatus = await getCitationRescoreJobStatus(rescoreTrackingJobId);
+        if (cancelled || !jobStatus) {
+          return;
+        }
+
+        const normalizedStatus = String(jobStatus.status || "").toLowerCase();
+
+        if (["queued", "deferred", "scheduled"].includes(normalizedStatus)) {
+          setRescoreTrackingMessage(
+            `Đã enqueue job ${rescoreTrackingJobId}. Đang chờ worker nhận job...`
+          );
+          return;
+        }
+
+        if (["started", "running", "busy"].includes(normalizedStatus)) {
+          setRescoreTrackingMessage(
+            `Worker đang xử lý job ${rescoreTrackingJobId}. Vui lòng chờ hoàn tất.`
+          );
+          return;
+        }
+
+        if (["finished", "complete", "completed"].includes(normalizedStatus)) {
+          setRescoreTracking(false);
+          setRescoreTrackingMessage("");
+          setRescoreMessage(
+            `Global rescore hoàn tất (job: ${rescoreTrackingJobId}). Bấm "Làm mới mạng" để xem dữ liệu mới.`
+          );
+          return;
+        }
+
+        if (["failed", "stopped", "canceled", "cancelled"].includes(normalizedStatus)) {
+          setRescoreTracking(false);
+          setRescoreTrackingMessage("");
+          const detail = jobStatus.error_excerpt ? ` Chi tiết: ${jobStatus.error_excerpt}` : "";
+          setRescoreError(
+            `Global rescore thất bại (job: ${rescoreTrackingJobId}).${detail}`
+          );
+          return;
+        }
+
+        setRescoreTrackingMessage(
+          `Job ${rescoreTrackingJobId} đã được enqueue. Trạng thái hiện tại: ${jobStatus.status}.`
+        );
+      } catch {
+        if (!cancelled) {
+          setRescoreTrackingMessage(
+            `Đã enqueue job ${rescoreTrackingJobId}. Đang đợi worker cập nhật trạng thái...`
+          );
+        }
+      }
+    };
+
+    void trackRun();
+    const interval = setInterval(() => {
+      void trackRun();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [rescoreTracking, rescoreTrackingJobId]);
+
   const selectedEdge = useMemo(
     () => network?.edges?.find((edge) => edge.edge_id === selectedEdgeId) || null,
     [network, selectedEdgeId]
@@ -267,13 +373,17 @@ export function CitationGraphPage() {
       setRescoreBusy(true);
       setRescoreError("");
       setRescoreMessage("");
+      setRescoreTrackingMessage("");
 
       const response = await enqueueGlobalCitationRescore({});
-      setRescoreMessage(
-        `Đã enqueue global rescore (job: ${response.queued_job_id}). Mạng sẽ cập nhật khi worker hoàn tất.`
+      setRescoreTracking(true);
+      setRescoreTrackingJobId(response.queued_job_id);
+      setRescoreTrackingMessage(
+        `Đã enqueue job ${response.queued_job_id}. Đang chờ worker bắt đầu xử lý...`
       );
-      setAutoRefresh(true);
-      void loadNetwork({ silent: true });
+      setRescoreMessage(
+        `Đã enqueue global rescore (job: ${response.queued_job_id}). Hệ thống đang theo dõi tiến trình và sẽ báo khi hoàn tất.`
+      );
     } catch (runError) {
       setRescoreError(runError.message || "Không thể enqueue global rescore.");
     } finally {
@@ -338,23 +448,27 @@ export function CitationGraphPage() {
                   {loading ? "Đang tải..." : "Làm mới mạng"}
                 </button>
                 <button
-                  className="btn btn--secondary"
-                  onClick={() => setAutoRefresh((previous) => !previous)}
+                  className="btn btn--primary"
+                  onClick={handleRescore}
+                  disabled={rescoreBusy || rescoreTracking}
                 >
-                  {autoRefresh ? "Tắt auto-refresh" : "Bật auto-refresh"}
-                </button>
-                <button className="btn btn--primary" onClick={handleRescore} disabled={rescoreBusy}>
-                  {rescoreBusy ? "Đang enqueue..." : "Global Rescore"}
+                  {rescoreBusy
+                    ? "Đang enqueue..."
+                    : rescoreTracking
+                      ? "Đang chạy rescore..."
+                      : "Global Rescore"}
                 </button>
               </div>
             </div>
 
             <div className="citation-legend" style={{ marginTop: "0.8rem" }}>
-              <span>Auto-refresh: {autoRefresh ? "Đang bật (8s/lần)" : "Đang tắt"}</span>
               <span>Dữ liệu cập nhật lần cuối: {formatDateTime(lastLoadedAt)}</span>
             </div>
 
             {rescoreMessage && <div className="citation-notice">{rescoreMessage}</div>}
+            {rescoreTracking && rescoreTrackingMessage && (
+              <div className="citation-notice citation-notice--pending">{rescoreTrackingMessage}</div>
+            )}
             {rescoreError && <div className="citation-notice citation-notice--error">{rescoreError}</div>}
             {error && <div className="citation-notice citation-notice--error">{error}</div>}
           </section>
@@ -372,8 +486,8 @@ export function CitationGraphPage() {
 
               {loading ? (
                 <div className="citation-empty">Đang tải dữ liệu mạng trích dẫn...</div>
-              ) : !network?.edges?.length ? (
-                <div className="citation-empty">Chưa có cạnh trích dẫn phù hợp với bộ lọc hiện tại.</div>
+              ) : !network?.nodes?.length ? (
+                <div className="citation-empty">Chưa có tài liệu nào để hiển thị trên mạng trích dẫn.</div>
               ) : (
                 <>
                   <div className="citation-graph-wrap">
@@ -567,23 +681,28 @@ export function CitationGraphPage() {
                     </div>
                   </div>
 
-                  <div className="citation-edge-list">
-                    {(network.edges || []).slice(0, 18).map((edge) => (
-                      <div
-                        key={edge.edge_id}
-                        className={`citation-edge-item ${
-                          edge.edge_id === selectedEdgeId ? "citation-edge-item--active" : ""
-                        }`}
-                        onClick={() => setSelectedEdgeId(edge.edge_id)}
-                      >
-                        <div className="citation-edge-item__title">
-                          {trimTitle(edge.source_title, 28)}{" -> "}{trimTitle(edge.target_title, 28)}
+                  <div className="citation-edge-list-box">
+                    <div className="citation-edge-list-box__head">
+                      Danh sách cạnh ({(network.edges || []).length})
+                    </div>
+                    <div className="citation-edge-list" role="list" aria-label="Danh sách cạnh trích dẫn">
+                      {(network.edges || []).map((edge) => (
+                        <div
+                          key={edge.edge_id}
+                          className={`citation-edge-item ${
+                            edge.edge_id === selectedEdgeId ? "citation-edge-item--active" : ""
+                          }`}
+                          onClick={() => setSelectedEdgeId(edge.edge_id)}
+                        >
+                          <div className="citation-edge-item__title">
+                            {trimTitle(edge.source_title, 28)}{" -> "}{trimTitle(edge.target_title, 28)}
+                          </div>
+                          <div className="citation-edge-item__meta">
+                            score {Number(edge.citation_score).toFixed(4)} | mentions {edge.mention_count}
+                          </div>
                         </div>
-                        <div className="citation-edge-item__meta">
-                          score {Number(edge.citation_score).toFixed(4)} | mentions {edge.mention_count}
-                        </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
 
                   {selectedEdge && (
@@ -610,19 +729,34 @@ export function CitationGraphPage() {
                         <div className="citation-notice citation-notice--error">{mentionError}</div>
                       ) : mentions.length ? (
                         <div className="citation-mention-list">
-                          {mentions.map((mention) => (
-                            <div className="citation-mention" key={mention.id}>
-                              <div className="citation-mention__head">
-                                <span className="citation-mention__anchor">
-                                  {mention.anchor_text || "(no anchor)"}
-                                </span>
-                                <span className="citation-mention__score">
-                                  m={Number(mention.mention_score).toFixed(4)}
-                                </span>
+                          {mentions.map((mention) => {
+                            const intentUi = resolveIntentUi(mention.intent_label);
+                            return (
+                              <div className="citation-mention" key={mention.id}>
+                                <div className="citation-mention__head">
+                                  <span className="citation-mention__anchor">
+                                    {mention.anchor_text || "(no anchor)"}
+                                  </span>
+                                  <span className="citation-mention__score">
+                                    m={Number(mention.mention_score).toFixed(4)}
+                                  </span>
+                                </div>
+
+                                <div className="citation-mention__meta">
+                                  <span
+                                    className={`citation-intent-badge citation-intent-badge--${intentUi.tone}`}
+                                  >
+                                    Intent: {intentUi.label}
+                                  </span>
+                                  <span className="citation-mention__intent-score">
+                                    Intent Score: {Number(mention.intent_score).toFixed(4)}
+                                  </span>
+                                </div>
+
+                                <div className="citation-mention__snippet">{mention.context_snippet}</div>
                               </div>
-                              <div className="citation-mention__snippet">{mention.context_snippet}</div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : (
                         <div className="citation-empty">Cạnh này chưa có evidence nội bộ.</div>

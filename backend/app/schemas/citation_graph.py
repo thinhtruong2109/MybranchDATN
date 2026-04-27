@@ -22,6 +22,15 @@ class CitationScoreEnqueueResponse(BaseModel):
     paper_id: UUID | None = None
 
 
+class CitationQueueJobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    enqueued_at: datetime | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    error_excerpt: str | None = None
+
+
 class CanonicalDocumentCitationSummaryResponse(BaseModel):
     id: UUID
     canonical_key: str
