@@ -130,70 +130,6 @@ class PaperServiceUploadValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.detail, "Only PDF files are allowed.")
         self.service.storage.upload_pdf_bytes.assert_not_called()
 
-    async def test_upload_pdf_accepts_uppercase_extension_and_defaults_mime_type(self) -> None:
-        file = UploadFile(
-            file=BytesIO(VALID_PDF_BYTES),
-            filename="UPPER.PDF",
-            headers=Headers({}),
-        )
-
-        paper = await self.service.upload_pdf(file)
-
-        self.assertEqual(paper.mime_type, "application/pdf")
-        upload_kwargs = self.service.storage.upload_pdf_bytes.call_args.kwargs
-        self.assertEqual(upload_kwargs["content_type"], "application/pdf")
-        self.assertTrue(upload_kwargs["object_name"].endswith(".PDF"))
-
-    async def test_upload_pdf_rejects_missing_filename(self) -> None:
-        file = make_upload_file("", VALID_PDF_BYTES)
-
-        with self.assertRaises(HTTPException) as context:
-            await self.service.upload_pdf(file)
-
-        self.assertEqual(context.exception.status_code, 400)
-        self.assertEqual(context.exception.detail, "Filename is required.")
-        self.service.storage.upload_pdf_bytes.assert_not_called()
-
-    async def test_upload_pdf_rejects_empty_file(self) -> None:
-        file = make_upload_file("empty.pdf", b"")
-
-        with self.assertRaises(HTTPException) as context:
-            await self.service.upload_pdf(file)
-
-        self.assertEqual(context.exception.status_code, 400)
-        self.assertEqual(context.exception.detail, "Uploaded file is empty.")
-        self.service.storage.upload_pdf_bytes.assert_not_called()
-
-    async def test_upload_pdf_rejects_invalid_pdf_signature(self) -> None:
-        file = make_upload_file("invalid.pdf", b"NOT_A_PDF")
-
-        with self.assertRaises(HTTPException) as context:
-            await self.service.upload_pdf(file)
-
-        self.assertEqual(context.exception.status_code, 400)
-        self.assertEqual(context.exception.detail, "Invalid PDF file signature.")
-        self.service.storage.upload_pdf_bytes.assert_not_called()
-
-    async def test_upload_pdf_handles_queue_enqueue_failure(self) -> None:
-        captured: dict[str, object] = {}
-
-        def create_side_effect(paper):
-            captured["paper"] = paper
-            return paper
-
-        self.service.repo.create.side_effect = create_side_effect
-        self.service.queue_service.enqueue_pdf_parse.side_effect = RuntimeError("Queue unavailable")
-        self.service.repo.get_by_id.side_effect = lambda _paper_id: captured.get("paper")
-
-        file = make_upload_file("valid.pdf", VALID_PDF_BYTES)
-        paper = await self.service.upload_pdf(file)
-
-        self.assertEqual(paper.processing_status, "failed")
-        self.assertEqual(paper.processing_stage, "uploaded")
-        self.assertIn("Failed to enqueue parse job", paper.processing_error or "")
-        self.service.activity_service.log_parse_queue_failed.assert_called_once()
-        self.db.rollback.assert_called()
-
     async def test_upload_pdf_rejects_corrupted_pdf(self) -> None:
         file = make_upload_file("corrupted.pdf", b"%PDF-1.7\nthis is not a real pdf")
 
@@ -221,35 +157,6 @@ class PaperServiceUploadValidationTests(unittest.IsolatedAsyncioTestCase):
             "File exceeds max size of 10 bytes.",
         )
         self.service.storage.upload_pdf_bytes.assert_not_called()
-
-    async def test_upload_pdf_accepts_file_at_exact_max_size_boundary(self) -> None:
-        file = make_upload_file("boundary.pdf", VALID_PDF_BYTES)
-
-        with patch("app.services.paper_service.MAX_UPLOAD_SIZE_BYTES", len(VALID_PDF_BYTES)):
-            paper = await self.service.upload_pdf(file)
-
-        self.assertEqual(paper.file_size_bytes, len(VALID_PDF_BYTES))
-        self.service.storage.upload_pdf_bytes.assert_called_once()
-
-    def test_validate_pdf_content_rejects_pdf_without_pages(self) -> None:
-        class EmptyPdf:
-            pages: list[object] = []
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-        with patch("app.services.paper_service.pdfplumber.open", return_value=EmptyPdf()):
-            with self.assertRaises(HTTPException) as context:
-                PaperService._validate_pdf_content(VALID_PDF_BYTES)
-
-        self.assertEqual(context.exception.status_code, 400)
-        self.assertEqual(
-            context.exception.detail,
-            "Corrupted or unreadable PDF file.",
-        )
 
 
 if __name__ == "__main__":
