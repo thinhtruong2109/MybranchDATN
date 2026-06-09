@@ -28,6 +28,15 @@ async function post(url, payload) {
   }
 }
 
+async function del(url) {
+  try {
+    const response = await apiClient.delete(url);
+    return response.data;
+  } catch (error) {
+    throw new Error(await parseApiError(error));
+  }
+}
+
 export async function getAdminOverview() {
   return get("/api/admin/overview");
 }
@@ -48,6 +57,10 @@ export async function getAdminCanonicalDocuments(
     sort_by,
     sort_order,
   });
+}
+
+export async function getAdminCanonicalExport() {
+  return get("/api/admin/canonical-documents/export");
 }
 
 export async function getAdminActivities(page = 1, pageSize = 20, options = {}) {
@@ -86,4 +99,37 @@ export async function getAdminEvaluationReport(windowDays = 7, searchSampleLimit
     search_sample_limit: searchSampleLimit,
   });
 }
+
+export async function getAdminLLMPrompts() {
+  return get("/api/admin/llm-prompts");
+}
+
+export async function updateAdminLLMPrompts(payload) {
+  return patch("/api/admin/llm-prompts", payload);
+}
+
+export async function getAdminLLMModels() {
+  return get("/api/admin/llm-models");
+}
+
+export async function addAdminLLMModel(payload) {
+  return post("/api/admin/llm-models", payload);
+}
+
+export async function updateAdminLLMModel(modelId, payload) {
+  return patch(`/api/admin/llm-models/${modelId}`, payload);
+}
+
+export async function removeAdminLLMModel(modelId) {
+  return del(`/api/admin/llm-models/${modelId}`);
+}
+
+export async function deleteAdminCanonicalDocument(canonicalId, deletePapers = false) {
+  return del(`/api/admin/canonical-documents/${canonicalId}?delete_papers=${deletePapers}`);
+}
+
+export async function deleteAdminPaper(paperId) {
+  return del(`/api/admin/papers/${paperId}`);
+}
+
 

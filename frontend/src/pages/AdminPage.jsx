@@ -4,13 +4,22 @@ import "../styles/AdminPage.css";
 import {
   getAdminActivities,
   getAdminCanonicalDocuments,
+  getAdminCanonicalExport,
   getAdminConfiguration,
+  getAdminLLMModels,
+  getAdminLLMPrompts,
   getAdminEvaluationReport,
   getAdminOverview,
   getAdminPapers,
   getAdminProcessingLogs,
+  addAdminLLMModel,
   updateAdminConfiguration,
+  updateAdminLLMModel,
+  updateAdminLLMPrompts,
   validateAdminConfiguration,
+  removeAdminLLMModel,
+  deleteAdminCanonicalDocument,
+  deleteAdminPaper,
 } from "../services/adminApi.js";
 
 const TAB_CONFIG = [
@@ -21,6 +30,11 @@ const TAB_CONFIG = [
   { key: "processing", label: "Processing log" },
   { key: "config", label: "Cấu hình" },
   { key: "evaluation", label: "Dữ liệu đánh giá" },
+];
+
+const PRIMARY_LLM_PROVIDERS = [
+  { name: "openrouter", label: "Primary (OpenRouter)" },
+  { name: "ollama", label: "Secondary (Ollama - Gemma)" },
 ];
 
 function formatDate(value) {
@@ -142,8 +156,10 @@ export function AdminPage() {
 
   const [config, setConfig] = useState(null);
   const [configForm, setConfigForm] = useState({
-    llm_provider: "gemini",
+    llm_provider: "openrouter",
     llm_model: "",
+    llm_extra_params: "",
+    llm_api_key: "",
     embedding_model: "",
     metadata_match_threshold: 0.7,
     pipeline_retry_limit: 3,
@@ -157,9 +173,20 @@ export function AdminPage() {
   const [validationResults, setValidationResults] = useState({});
   const [validatingService, setValidatingService] = useState(null);
   const [configSuccess, setConfigSuccess] = useState("");
+  const [modelOptions, setModelOptions] = useState([]);
+  const [modelDraftName, setModelDraftName] = useState("");
+  const [modelEditingId, setModelEditingId] = useState(null);
+  const [modelEditingValue, setModelEditingValue] = useState("");
+  const [isSavingModel, setIsSavingModel] = useState(false);
+
+  const [promptTemplates, setPromptTemplates] = useState([]);
+  const [promptForm, setPromptForm] = useState({});
+  const [isSavingPrompts, setIsSavingPrompts] = useState(false);
+  const [promptSuccess, setPromptSuccess] = useState("");
 
   const [evaluation, setEvaluation] = useState(null);
   const [windowDays, setWindowDays] = useState(7);
+  const [isExportingCanonical, setIsExportingCanonical] = useState(false);
 
   const runWithState = useCallback(async (task) => {
     setLoading(true);
@@ -218,11 +245,20 @@ export function AdminPage() {
 
   const loadConfig = useCallback(() => {
     return runWithState(async () => {
-      const data = await getAdminConfiguration();
+      const [data, promptData, modelData] = await Promise.all([
+        getAdminConfiguration(),
+        getAdminLLMPrompts(),
+        getAdminLLMModels(),
+      ]);
+
       setConfig(data);
       setConfigForm({
-        llm_provider: data.llm_provider || "gemini",
+        llm_provider: data.llm_provider || "openrouter",
         llm_model: data.llm_model || "",
+        llm_extra_params: data.llm_extra_params
+          ? JSON.stringify(data.llm_extra_params, null, 2)
+          : "",
+        llm_api_key: "",
         embedding_model: data.embedding_model || "",
         metadata_match_threshold: data.metadata_match_threshold ?? 0.7,
         pipeline_retry_limit: data.pipeline_retry_limit ?? 3,
@@ -232,8 +268,20 @@ export function AdminPage() {
         semantic_scholar_api_key: "",
         telegram_bot_token: "",
       });
+
+      const templates = promptData?.templates || [];
+      setPromptTemplates(templates);
+      const initialPromptForm = {};
+      templates.forEach((template) => {
+        initialPromptForm[template.key] = template.content || "";
+      });
+      setPromptForm(initialPromptForm);
+
+      setModelOptions(modelData?.models || []);
+
       setValidationResults({});
       setConfigSuccess("");
+      setPromptSuccess("");
     });
   }, [runWithState]);
 
@@ -313,8 +361,22 @@ export function AdminPage() {
     ];
   }, [evaluation]);
 
+  const providerOptions = PRIMARY_LLM_PROVIDERS;
+  const isPrimaryProvider = configForm.llm_provider === "openrouter";
+
   const updateConfigField = useCallback((field, value) => {
-    setConfigForm((prev) => ({ ...prev, [field]: value }));
+    setConfigForm((prev) => {
+      if (field === "llm_provider") {
+        return {
+          ...prev,
+          llm_provider: value,
+          llm_model: "",
+          llm_extra_params: "",
+          llm_api_key: "",
+        };
+      }
+      return { ...prev, [field]: value };
+    });
     setValidationResults((prev) => {
       const next = { ...prev };
       if (field.startsWith("llm_")) delete next.llm;
@@ -325,14 +387,177 @@ export function AdminPage() {
     });
   }, []);
 
+  const updatePromptField = useCallback((key, value) => {
+    setPromptForm((prev) => ({ ...prev, [key]: value }));
+    setPromptSuccess("");
+  }, []);
+
+  const parseExtraParams = useCallback((raw) => {
+    if (!raw || !raw.trim()) return undefined;
+    try {
+      return JSON.parse(raw);
+    } catch (err) {
+      throw new Error("LLM extra params phải là JSON hợp lệ.");
+    }
+  }, []);
+
+  const addModelOption = useCallback(async () => {
+    if (!modelDraftName.trim()) {
+      setError("Tên model không được để trống.");
+      return;
+    }
+    setIsSavingModel(true);
+    setError("");
+    try {
+      const created = await addAdminLLMModel({ name: modelDraftName.trim() });
+      setModelOptions((prev) =>
+        [...prev, created].sort((a, b) => a.name.localeCompare(b.name))
+      );
+      setModelDraftName("");
+    } catch (err) {
+      setError(err.message || "Không thể thêm model.");
+    } finally {
+      setIsSavingModel(false);
+    }
+  }, [modelDraftName]);
+
+  const startEditModel = useCallback((model) => {
+    setModelEditingId(model.id);
+    setModelEditingValue(model.name);
+  }, []);
+
+  const cancelEditModel = useCallback(() => {
+    setModelEditingId(null);
+    setModelEditingValue("");
+  }, []);
+
+  const saveEditModel = useCallback(async () => {
+    if (!modelEditingId) return;
+    if (!modelEditingValue.trim()) {
+      setError("Tên model không được để trống.");
+      return;
+    }
+    setIsSavingModel(true);
+    setError("");
+    try {
+      const updated = await updateAdminLLMModel(modelEditingId, {
+        name: modelEditingValue.trim(),
+      });
+      setModelOptions((prev) =>
+        prev
+          .map((item) => (item.id === updated.id ? updated : item))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      );
+      cancelEditModel();
+    } catch (err) {
+      setError(err.message || "Không thể cập nhật model.");
+    } finally {
+      setIsSavingModel(false);
+    }
+  }, [modelEditingId, modelEditingValue, cancelEditModel]);
+
+  const deleteModelOption = useCallback(async (model) => {
+    setIsSavingModel(true);
+    setError("");
+    try {
+      await removeAdminLLMModel(model.id);
+      setModelOptions((prev) => prev.filter((item) => item.id !== model.id));
+      if (configForm.llm_model === model.name) {
+        setConfigForm((prev) => ({ ...prev, llm_model: "" }));
+      }
+    } catch (err) {
+      setError(err.message || "Không thể xóa model.");
+    } finally {
+      setIsSavingModel(false);
+    }
+  }, [configForm.llm_model]);
+
+  const handleDeleteCanonical = useCallback(async (doc) => {
+    let deletePapers = false;
+    if (doc.paper_count > 0) {
+      const confirmDeleteAll = window.confirm(
+        `Tài liệu chuẩn này đang liên kết với ${doc.paper_count} bài báo. Bạn có đồng ý xóa cả tài liệu chuẩn và tất cả bài báo liên kết không?`
+      );
+      if (!confirmDeleteAll) return;
+      deletePapers = true;
+    } else {
+      const confirmDelete = window.confirm("Bạn có chắc chắn muốn xóa tài liệu chuẩn này không?");
+      if (!confirmDelete) return;
+    }
+
+    setLoading(true);
+    setError("");
+    try {
+      await deleteAdminCanonicalDocument(doc.id, deletePapers);
+      await loadCanonical();
+      void loadOverview();
+      void loadActivities();
+    } catch (err) {
+      setError(err.message || "Không thể xóa tài liệu chuẩn.");
+    } finally {
+      setLoading(false);
+    }
+  }, [loadCanonical, loadOverview, loadActivities]);
+
+  const handleDeletePaper = useCallback(async (paper) => {
+    const confirmDelete = window.confirm(
+      `Bạn có chắc chắn muốn xóa bài báo "${paper.original_filename}" không? Hành động này không thể hoàn tác.`
+    );
+    if (!confirmDelete) return;
+
+    setLoading(true);
+    setError("");
+    try {
+      await deleteAdminPaper(paper.id);
+      await loadPapers();
+      void loadOverview();
+      void loadActivities();
+    } catch (err) {
+      setError(err.message || "Không thể xóa bài báo.");
+    } finally {
+      setLoading(false);
+    }
+  }, [loadPapers, loadOverview, loadActivities]);
+
+
+  const savePrompts = useCallback(async () => {
+    setIsSavingPrompts(true);
+    setError("");
+    setPromptSuccess("");
+    try {
+      const payload = {
+        templates: promptTemplates.map((template) => ({
+          key: template.key,
+          content: promptForm[template.key] ?? "",
+        })),
+      };
+      const updated = await updateAdminLLMPrompts(payload);
+      const templates = updated.templates || [];
+      setPromptTemplates(templates);
+      const nextPromptForm = {};
+      templates.forEach((template) => {
+        nextPromptForm[template.key] = template.content || "";
+      });
+      setPromptForm(nextPromptForm);
+      setPromptSuccess("Prompt đã được lưu.");
+    } catch (err) {
+      setError(err.message || "Lưu prompt thất bại");
+    } finally {
+      setIsSavingPrompts(false);
+    }
+  }, [promptForm, promptTemplates]);
+
   const testService = useCallback(async (service) => {
     setValidatingService(service);
     setError("");
     try {
+      const extraParams = parseExtraParams(configForm.llm_extra_params);
       const payload = {
         service,
         llm_provider: configForm.llm_provider,
         llm_model: configForm.llm_model || undefined,
+        llm_extra_params: extraParams || undefined,
+        llm_api_key: configForm.llm_api_key || undefined,
         embedding_model: configForm.embedding_model || undefined,
         semantic_scholar_api_key: configForm.semantic_scholar_api_key || undefined,
         telegram_bot_token: configForm.telegram_bot_token || undefined,
@@ -360,8 +585,12 @@ export function AdminPage() {
       const updated = await updateAdminConfiguration({ use_default_settings: true });
       setConfig(updated);
       setConfigForm({
-        llm_provider: updated.llm_provider || "gemini",
+        llm_provider: updated.llm_provider || "openrouter",
         llm_model: updated.llm_model || "",
+        llm_extra_params: updated.llm_extra_params
+          ? JSON.stringify(updated.llm_extra_params, null, 2)
+          : "",
+        llm_api_key: "",
         embedding_model: updated.embedding_model || "",
         metadata_match_threshold: updated.metadata_match_threshold ?? 0.7,
         pipeline_retry_limit: updated.pipeline_retry_limit ?? 3,
@@ -385,6 +614,7 @@ export function AdminPage() {
     setError("");
     setConfigSuccess("");
     try {
+      const extraParams = parseExtraParams(configForm.llm_extra_params);
       const payload = {
         llm_provider: configForm.llm_provider,
         llm_model: configForm.llm_model,
@@ -395,6 +625,14 @@ export function AdminPage() {
         telegram_enabled: Boolean(configForm.telegram_enabled),
         telegram_chat_id: configForm.telegram_chat_id || null,
       };
+      if (configForm.llm_extra_params.trim()) {
+        payload.llm_extra_params = extraParams;
+      } else {
+        payload.llm_extra_params = null;
+      }
+      if (configForm.llm_api_key.trim()) {
+        payload.llm_api_key = configForm.llm_api_key.trim();
+      }
       if (configForm.semantic_scholar_api_key.trim()) {
         payload.semantic_scholar_api_key = configForm.semantic_scholar_api_key.trim();
       }
@@ -406,6 +644,7 @@ export function AdminPage() {
       setConfig(updated);
       setConfigForm((prev) => ({
         ...prev,
+        llm_api_key: "",
         semantic_scholar_api_key: "",
         telegram_bot_token: "",
       }));
@@ -432,6 +671,29 @@ export function AdminPage() {
     anchor.remove();
     URL.revokeObjectURL(url);
   }, [evaluation]);
+
+  const exportCanonicalMetadata = useCallback(async () => {
+    setIsExportingCanonical(true);
+    setError("");
+    try {
+      const data = await getAdminCanonicalExport();
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `canonical-metadata-${new Date().toISOString()}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.message || "Xuất metadata thất bại");
+    } finally {
+      setIsExportingCanonical(false);
+    }
+  }, []);
 
   return (
     <div className="app-shell admin-page">
@@ -525,6 +787,7 @@ export function AdminPage() {
                       <th>Status</th>
                       <th>Stage</th>
                       <th>Created</th>
+                      <th>Thao tác</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -536,11 +799,20 @@ export function AdminPage() {
                         </td>
                         <td>{paper.processing_stage || "-"}</td>
                         <td>{formatDate(paper.created_at)}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn--danger admin-btn-compact"
+                            onClick={() => handleDeletePaper(paper)}
+                          >
+                            Xóa
+                          </button>
+                        </td>
                       </tr>
                     ))}
                     {papers.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="admin-table__empty">Không có dữ liệu</td>
+                        <td colSpan={5} className="admin-table__empty">Không có dữ liệu</td>
                       </tr>
                     )}
                   </tbody>
@@ -552,9 +824,21 @@ export function AdminPage() {
 
           {activeTab === "canonical" && (
             <div className="card admin-panel-card">
-              <h3 className="admin-card-title">
-                Canonical Documents ({canonicalTotal}) - Trang {canonicalPage}/{canonicalTotalPages}
-              </h3>
+              <div className="admin-panel-head">
+                <h3 className="admin-card-title">
+                  Canonical Documents ({canonicalTotal}) - Trang {canonicalPage}/{canonicalTotalPages}
+                </h3>
+                <div className="admin-filter-row">
+                  <button
+                    className="admin-test-btn"
+                    type="button"
+                    onClick={exportCanonicalMetadata}
+                    disabled={isExportingCanonical}
+                  >
+                    {isExportingCanonical ? "Đang xuất..." : "Export JSON Metadata"}
+                  </button>
+                </div>
+              </div>
               <div className="admin-table-wrap">
                 <table className="admin-table">
                   <thead>
@@ -563,6 +847,7 @@ export function AdminPage() {
                       <th>Title</th>
                       <th>Status</th>
                       <th>Papers</th>
+                      <th>Thao tác</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -572,11 +857,20 @@ export function AdminPage() {
                         <td>{doc.title || doc.title_candidate || "-"}</td>
                         <td><StatusBadge status={doc.enrichment_status || "-"} /></td>
                         <td>{doc.paper_count || 0}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn--danger admin-btn-compact"
+                            onClick={() => handleDeleteCanonical(doc)}
+                          >
+                            Xóa
+                          </button>
+                        </td>
                       </tr>
                     ))}
                     {canonicalDocs.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="admin-table__empty">Không có dữ liệu</td>
+                        <td colSpan={5} className="admin-table__empty">Không có dữ liệu</td>
                       </tr>
                     )}
                   </tbody>
@@ -585,6 +879,7 @@ export function AdminPage() {
               <Pagination page={canonicalPage} totalPages={canonicalTotalPages} onChange={setCanonicalPage} />
             </div>
           )}
+
 
           {activeTab === "activities" && (
             <div className="card admin-panel-card">
@@ -730,14 +1025,208 @@ export function AdminPage() {
                   <label className="admin-label">
                     Provider
                     <select className="admin-input" value={configForm.llm_provider} onChange={(e) => updateConfigField("llm_provider", e.target.value)}>
-                      <option value="gemini">Gemini</option>
-                      <option value="ollama">Ollama</option>
+                      {providerOptions.map((provider) => (
+                        <option key={provider.name} value={provider.name}>
+                          {provider.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <label className="admin-label">
                     Model name
-                    <input className="admin-input" type="text" value={configForm.llm_model} onChange={(e) => updateConfigField("llm_model", e.target.value)} placeholder="e.g. gemini-2.5-pro" />
+                    <select
+                      className="admin-input"
+                      value={configForm.llm_model || ""}
+                      onChange={(e) => updateConfigField("llm_model", e.target.value)}
+                      disabled={!isPrimaryProvider}
+                    >
+                      {!isPrimaryProvider ? (
+                        <option value={configForm.llm_model || ""}>Gemma (default)</option>
+                      ) : (
+                        <>
+                          {configForm.llm_model && !modelOptions.find(m => m.name === configForm.llm_model) && (
+                            <option value={configForm.llm_model}>{configForm.llm_model} (Chưa có trong catalog)</option>
+                          )}
+                          {!configForm.llm_model && (
+                            <option value="" disabled>
+                              {modelOptions.length === 0 ? "Chưa có model, hãy thêm ở catalog" : "Chọn model..."}
+                            </option>
+                          )}
+                          {modelOptions.map((model) => (
+                            <option key={model.id} value={model.name}>
+                              {model.name}
+                            </option>
+                          ))}
+                        </>
+                      )}
+                    </select>
                   </label>
+                </div>
+                <label className="admin-label">
+                  Extra params (JSON) - OpenRouter only
+                  <textarea
+                    className="admin-textarea"
+                    rows={4}
+                    value={configForm.llm_extra_params}
+                    onChange={(e) => updateConfigField("llm_extra_params", e.target.value)}
+                    placeholder='{"reasoning_effort": "high", "extra_body": {"thinking": {"type": "enabled"}}}'
+                    disabled={!isPrimaryProvider}
+                  />
+                </label>
+                <label className="admin-label">
+                  OpenRouter API key (nhập mới để cập nhật)
+                  <input
+                    className="admin-input"
+                    type="password"
+                    value={configForm.llm_api_key}
+                    onChange={(e) => updateConfigField("llm_api_key", e.target.value)}
+                    placeholder="Nhập API key..."
+                  />
+                </label>
+                <div className="admin-meta-text">
+                  Key hiện tại: {config?.llm_api_key_masked || "(chưa cấu hình)"}
+                </div>
+                <div className="admin-meta-text">
+                  {isPrimaryProvider
+                    ? "Fallback: Primary (OpenRouter) → Secondary (Ollama - Gemma) → Regex"
+                    : "Fallback: Secondary (Ollama - Gemma) → Regex"}
+                </div>
+              </div>
+
+              <div className="card admin-panel-card admin-config-card">
+                <div className="admin-config-card__head">
+                  <h4 className="admin-card-subtitle">📦 OpenRouter model catalog</h4>
+                </div>
+                <div className="admin-form-grid admin-form-grid--two">
+                  <label className="admin-label">
+                    Model name
+                    <input
+                      className="admin-input"
+                      type="text"
+                      value={modelDraftName}
+                      onChange={(e) => setModelDraftName(e.target.value)}
+                      placeholder="e.g. google/gemini-2.5-flash"
+                    />
+                  </label>
+                  <div className="admin-filter-row" style={{ alignItems: "flex-end" }}>
+                    <button
+                      type="button"
+                      className="admin-test-btn"
+                      onClick={addModelOption}
+                      disabled={isSavingModel}
+                    >
+                      {isSavingModel ? "Đang lưu..." : "Thêm model"}
+                    </button>
+                  </div>
+                </div>
+                {modelOptions.length === 0 && (
+                  <div className="admin-empty-state">Chưa có model nào trong danh sách.</div>
+                )}
+                {modelOptions.length > 0 && (
+                  <div className="admin-log-list">
+                    {modelOptions.map((model) => (
+                      <div key={model.id} className="admin-log-item">
+                        <div className="admin-log-item__head">
+                          <strong>{model.name}</strong>
+                          <div className="admin-filter-row">
+                            {modelEditingId === model.id ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="admin-test-btn"
+                                  onClick={saveEditModel}
+                                  disabled={isSavingModel}
+                                >
+                                  Lưu
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn--secondary admin-btn-compact"
+                                  onClick={cancelEditModel}
+                                  disabled={isSavingModel}
+                                >
+                                  Hủy
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  className="btn btn--secondary admin-btn-compact"
+                                  onClick={() => startEditModel(model)}
+                                  disabled={isSavingModel}
+                                >
+                                  Sửa
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn--secondary admin-btn-compact"
+                                  onClick={() => deleteModelOption(model)}
+                                  disabled={isSavingModel}
+                                >
+                                  Xóa
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        {modelEditingId === model.id && (
+                          <input
+                            className="admin-input"
+                            type="text"
+                            value={modelEditingValue}
+                            onChange={(e) => setModelEditingValue(e.target.value)}
+                          />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Prompt Templates Section */}
+              <div className="card admin-panel-card admin-config-card">
+                <div className="admin-config-card__head">
+                  <h4 className="admin-card-subtitle">📝 Prompt LLM</h4>
+                  <div className="admin-filter-row">
+                    <button
+                      type="button"
+                      onClick={savePrompts}
+                      disabled={isSavingPrompts}
+                      className="admin-test-btn"
+                    >
+                      {isSavingPrompts ? "Đang lưu..." : "Lưu prompt"}
+                    </button>
+                  </div>
+                </div>
+                {promptSuccess && (
+                  <div className="admin-callout admin-callout--success">
+                    ✅ {promptSuccess}
+                  </div>
+                )}
+                <div className="admin-meta-text">
+                  Placeholder hỗ trợ: {"{{input_text}}, {{schema}}, {{output_shape}}, {{shape}}, {{broken_json}}, {{prompt_version}}."}
+                </div>
+                <div className="admin-prompt-grid">
+                  {promptTemplates.length === 0 && (
+                    <div className="admin-empty-state">Chưa có prompt để chỉnh sửa.</div>
+                  )}
+                  {promptTemplates.map((template) => (
+                    <label key={template.key} className="admin-label admin-label--prompt">
+                      {template.label}
+                      <textarea
+                        className="admin-textarea"
+                        rows={10}
+                        value={promptForm[template.key] || ""}
+                        onChange={(e) => updatePromptField(template.key, e.target.value)}
+                      />
+                      <div className="admin-meta-text">
+                        Key: {template.key} · {template.is_default ? "Default" : "Custom"}
+                        {template.updated_at ? ` · Cập nhật ${formatDate(template.updated_at)}` : ""}
+                        {template.updated_by ? ` · bởi ${template.updated_by}` : ""}
+                      </div>
+                    </label>
+                  ))}
                 </div>
               </div>
 

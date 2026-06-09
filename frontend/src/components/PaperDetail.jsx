@@ -14,6 +14,52 @@ function formatMatchConfidence(confidence) {
   return numeric.toFixed(3);
 }
 
+function getCrossrefStatusLabel(status) {
+  switch (status) {
+    case "verified": return "Verified";
+    case "partial": return "Partial";
+    case "weak": return "Weak";
+    case "conflict": return "Conflict";
+    case "not_found": return "Not found";
+    case "rate_limited": return "Rate limited";
+    case "error": return "Error";
+    default: return "-";
+  }
+}
+
+function formatCrossrefField(field) {
+  if (!field) return "-";
+  const score = field.score == null ? "" : ` (${Number(field.score).toFixed(3)})`;
+  return `${field.status || "-"}${score}`;
+}
+
+function formatCrossrefValue(value) {
+  if (value == null || value === "") return "-";
+  if (Array.isArray(value)) {
+    return value.length ? value.join(", ") : "-";
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function CrossrefMetadataRow({ label, value, field }) {
+  return (
+    <div className="crossref-metadata__row">
+      <dt>{label}</dt>
+      <dd>
+        <span className="crossref-metadata__value">{formatCrossrefValue(value)}</span>
+        {field && (
+          <span className={`crossref-metadata__status crossref-metadata__status--${field.status || "unknown"}`}>
+            {formatCrossrefField(field)}
+          </span>
+        )}
+      </dd>
+    </div>
+  );
+}
+
 function getSemanticStatusLabel(status) {
   switch (status) {
     case "enriched": return "Matched";
@@ -30,8 +76,12 @@ function getMatchTypeLabel(matchStatus) {
   switch (matchStatus) {
     case "matched_by_doi": return "Matched by DOI";
     case "matched_by_title": return "Matched by title";
+    case "matched_by_crossref_doi": return "Matched by Crossref DOI";
+    case "matched_by_crossref_title": return "Matched by Crossref title";
+    case "matched_by_crossref": return "Matched by Crossref";
     case "unmatched": return "Unmatched";
     case "rate_limited": return "Rate limited";
+    case "crossref_rate_limited": return "Crossref rate limited";
     default: return "-";
   }
 }
@@ -39,6 +89,7 @@ function getMatchTypeLabel(matchStatus) {
 function formatSemanticSource(source) {
   if (!source) return "-";
   if (source === "semantic_scholar") return "Semantic Scholar";
+  if (source === "crossref") return "Crossref";
   return source;
 }
 
@@ -73,8 +124,8 @@ export function PaperDetail({ paper }) {
   }
 
   const displayTitle =
-    paper.detectedTitle ||
     paper.title ||
+    paper.detectedTitle ||
     paper.originalFilename ||
     paper.filename ||
     "Unknown file";
@@ -99,6 +150,9 @@ export function PaperDetail({ paper }) {
   const authorsDisplay = paper.canonicalAuthors?.length
     ? paper.canonicalAuthors.join(", ")
     : "-";
+  const crossrefMetadata =
+    paper.crossrefMetadata || paper.crossrefVerification?.crossref_metadata || null;
+  const crossrefFields = paper.crossrefVerification?.fields || {};
 
   return (
     <section className="card detail-card">
@@ -209,7 +263,7 @@ export function PaperDetail({ paper }) {
       </div>
 
       <div className="detail-section semantic-section">
-        <h3 className="detail-section__title">Semantic Scholar enrichment</h3>
+        <h3 className="detail-section__title">Metadata enrichment</h3>
         <div className="semantic-status-row">
           <span
             className={`semantic-status-badge semantic-status-badge--${paper.semanticScholarStatus || "unknown"}`}
@@ -240,7 +294,84 @@ export function PaperDetail({ paper }) {
             <dt>Semantic Scholar paper ID</dt>
             <dd>{paper.ssPaperId || "-"}</dd>
           </div>
+          <div className="detail-list__item">
+            <dt>Crossref verification</dt>
+            <dd>{getCrossrefStatusLabel(paper.crossrefMatchStatus)}</dd>
+          </div>
+          <div className="detail-list__item">
+            <dt>Crossref confidence</dt>
+            <dd>{formatMatchConfidence(paper.crossrefMatchConfidence)}</dd>
+          </div>
         </dl>
+
+        {paper.crossrefVerification?.fields && (
+          <dl className="detail-list semantic-detail-list">
+            <div className="detail-list__item">
+              <dt>Crossref DOI</dt>
+              <dd>{formatCrossrefField(paper.crossrefVerification.fields.doi)}</dd>
+            </div>
+            <div className="detail-list__item">
+              <dt>Crossref title</dt>
+              <dd>{formatCrossrefField(paper.crossrefVerification.fields.title)}</dd>
+            </div>
+            <div className="detail-list__item">
+              <dt>Crossref authors</dt>
+              <dd>{formatCrossrefField(paper.crossrefVerification.fields.authors)}</dd>
+            </div>
+            <div className="detail-list__item">
+              <dt>Crossref year</dt>
+              <dd>{formatCrossrefField(paper.crossrefVerification.fields.year)}</dd>
+            </div>
+            <div className="detail-list__item">
+              <dt>Crossref venue</dt>
+              <dd>{formatCrossrefField(paper.crossrefVerification.fields.venue)}</dd>
+            </div>
+            <div className="detail-list__item">
+              <dt>Crossref abstract</dt>
+              <dd>{formatCrossrefField(paper.crossrefVerification.fields.abstract)}</dd>
+            </div>
+          </dl>
+        )}
+
+        {crossrefMetadata && (
+          <div className="crossref-metadata">
+            <h4 className="semantic-metadata__title">Crossref returned metadata</h4>
+            <dl className="crossref-metadata__list">
+              <CrossrefMetadataRow
+                label="DOI"
+                value={crossrefMetadata.doi}
+                field={crossrefFields.doi}
+              />
+              <CrossrefMetadataRow
+                label="Title"
+                value={crossrefMetadata.title}
+                field={crossrefFields.title}
+              />
+              <CrossrefMetadataRow
+                label="Authors"
+                value={crossrefMetadata.authors}
+                field={crossrefFields.authors}
+              />
+              <CrossrefMetadataRow
+                label="Year"
+                value={crossrefMetadata.year}
+                field={crossrefFields.year}
+              />
+              <CrossrefMetadataRow
+                label="Venue"
+                value={crossrefMetadata.venue}
+                field={crossrefFields.venue}
+              />
+              <CrossrefMetadataRow
+                label="Abstract"
+                value={crossrefMetadata.abstract}
+                field={crossrefFields.abstract}
+              />
+              <CrossrefMetadataRow label="Type" value={crossrefMetadata.type} />
+              <CrossrefMetadataRow label="URL" value={crossrefMetadata.url} />
+            </dl>
+          </div>
+        )}
 
         {hasMatchedMetadata ? (
           <div className="semantic-metadata">

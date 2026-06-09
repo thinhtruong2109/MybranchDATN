@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from app.models.canonical_document import CanonicalDocument
 from app.services.llm.constants import MAX_INPUT_CHARS
@@ -12,30 +12,99 @@ class LLMInputBuilder:
     def _clean_text(self, text: str) -> str:
         return "\n".join(line.rstrip() for line in text.strip().splitlines()).strip()
 
+    def _format_page_marker(self, page_number: Any, section: Any = None) -> str:
+        page_text = str(page_number).strip() if page_number is not None else "unknown"
+        section_text = re.sub(r"\s+", " ", section).strip() if isinstance(section, str) else ""
+        if section_text:
+            return f"[PAGE {page_text} | SECTION {section_text}]"
+        return f"[PAGE {page_text}]"
+
+    def _build_page_aware_text(self, pages: list[dict[str, Any]] | None) -> str:
+        if not pages:
+            return ""
+
+        parts: list[str] = []
+        last_marker: str | None = None
+
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+
+            page_number = page.get("page")
+            blocks = page.get("blocks")
+            if isinstance(blocks, list) and blocks:
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    text = self._clean_text(str(block.get("text") or ""))
+                    if not text:
+                        continue
+                    marker = self._format_page_marker(
+                        block.get("page") or page_number,
+                        block.get("section"),
+                    )
+                    if marker != last_marker:
+                        parts.append(marker)
+                        last_marker = marker
+                    parts.append(text)
+                continue
+
+            text = self._clean_text(str(page.get("text") or ""))
+            if not text:
+                continue
+
+            sections = page.get("sections")
+            section = sections[0] if isinstance(sections, list) and len(sections) == 1 else None
+            marker = self._format_page_marker(page_number, section)
+            if marker != last_marker:
+                parts.append(marker)
+                last_marker = marker
+            parts.append(text)
+
+        return "\n\n".join(parts).strip()
+
     def _extract_priority_tail(self, text: str, fallback_chars: int) -> str:
-        """
-        Ưu tiên lấy đoạn cuối paper bắt đầu từ các section thường chứa limitation.
-        Nếu không tìm thấy thì lấy fallback từ cuối văn bản.
-        """
+        lowered = text.lower()
+        
+        # 1. Tìm ranh giới Main Paper (chặn trước References)
+        ref_pattern = r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?(?:references|bibliography|literature cited)\b"
+        ref_match = re.search(ref_pattern, lowered)
+        search_boundary = ref_match.start() if ref_match else len(text)
+        search_text = lowered[:search_boundary]
+
+        # 2. Danh sách từ khóa cần tìm
         patterns = [
-            r"\n\s*\d+(\.\d+)?\s+limitations\b",
-            r"\n\s*limitations\b",
-            r"\n\s*\d+(\.\d+)?\s+discussion\b",
-            r"\n\s*discussion\b",
-            r"\n\s*\d+(\.\d+)?\s+future work\b",
-            r"\n\s*future work\b",
-            r"\n\s*\d+(\.\d+)?\s+conclusion\b",
-            r"\n\s*conclusion\b",
+            r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?limitations?\b",
+            r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?challenges?\b",
+            r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?open\s+problems?\b",
+            r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?perspectives?\b",
+            r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?outlook\b",
+            r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?future\s+(?:trends?|work|research|direction|outlook|perspective)s?\b",
+            r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?discussion\b",
+            r"\n\s*(?:[ivxlcdm\d]+(?:\.[ivxlcdm\d]+)*\.?\s+)?conclusion\b",
         ]
 
-        lowered = text.lower()
-        for pattern in patterns:
-            m = re.search(pattern, lowered)
-            if m:
-                tail = text[m.start():]
-    # Lấy fallback_chars ký tự ĐẦU TIÊN của đoạn tail này
-                return tail[:fallback_chars]
+        valid_matches = []
+        half_len = len(search_text) * 0.4  # Tìm từ mốc 40% của bài báo trở đi
 
+        for pattern in patterns:
+            for match in re.finditer(pattern, search_text):
+                if match.start() > half_len:
+                    valid_matches.append(match.start())
+
+        if valid_matches:
+            # SỬA LỖI Ở ĐÂY: Lấy mốc XUẤT HIỆN SỚM NHẤT (min) thay vì muộn nhất
+            # Sẽ chọn "Limitations" (Trang 16) thay vì "Conclusion" (Trang 25)
+            best_idx = min(valid_matches)
+            tail = text[best_idx:]
+            return tail[:fallback_chars]
+
+        # Nếu không có từ khóa nào, lùi lại từ vị trí References
+        if ref_match:
+            start_idx = max(0, ref_match.start() - fallback_chars)
+            return text[start_idx : ref_match.start()]
+
+        # Fallback cuối cùng
         return text[-fallback_chars:] if len(text) > fallback_chars else text
 
     def _truncate_for_academic_paper(self, text: str, max_chars: int) -> str:
@@ -73,6 +142,7 @@ class LLMInputBuilder:
         canonical: CanonicalDocument,
         parsed_text: Optional[str] = None,
         full_text: Optional[str] = None,
+        pages: list[dict[str, Any]] | None = None,
     ) -> str:
         parts: list[str] = []
 
@@ -81,9 +151,12 @@ class LLMInputBuilder:
             "1. Return ONLY a valid JSON object. No conversational text.\n"
             "2. Keep each 'value' concise (usually <= 35 words), but keep core meaning complete.\n"
             "3. CONTRIBUTIONS: Prefer 2-3 atomic items when claims are clearly present.\n"
-            "4. LIMITATIONS: Prefer 1-2 items when constraints/future-work signals exist.\n"
-            "5. EVIDENCE: Keep snippet short (<= 180 chars). Use '...' to shorten long quotes.\n"
-            "6. Use only provided content. If not found, use null or []."
+            "4. LIMITATIONS: Return [] unless the authors explicitly state a limitation, scope constraint, caveat, or future-work item.\n"
+            "5. METHOD/CONTRIBUTIONS: Use this paper's own method/results, not cited prior work.\n"
+            "6. EVALUATION: Datasets/tasks and metrics must come from experiment context; citation venues are not datasets.\n"
+            "7. EVIDENCE: Keep snippet short (<= 180 chars). Use '...' to shorten long quotes.\n"
+            "8. Use only provided content. If not found, use null or [].\n"
+            "9. When [PAGE ... | SECTION ...] markers are present, use them for evidence page and section."
         )
 
         parts.append(
@@ -91,7 +164,8 @@ class LLMInputBuilder:
             "Use only the provided content. "
             "Do not guess missing information. "
             "If evidence is hard to localize, still keep conservative values grounded in text. "
-            "Avoid leaving contributions/limitations empty when clear signals exist in abstract/introduction/conclusion."
+            "Avoid leaving contributions empty when clear claims exist. "
+            "Do not use prior-work or baseline weaknesses from the introduction as limitations of the paper."
         )
 
 
@@ -110,7 +184,8 @@ class LLMInputBuilder:
         if canonical.title_candidate and canonical.title_candidate != canonical.title:
             parts.append(f"[DETECTED_TITLE_CANDIDATE]\n{canonical.title_candidate}")
 
-        effective_text = (full_text or "").strip() or (parsed_text or "").strip()
+        page_aware_text = self._build_page_aware_text(pages)
+        effective_text = page_aware_text or (full_text or "").strip() or (parsed_text or "").strip()
         cleaned_text = self._clean_text(effective_text)
 
         if cleaned_text:

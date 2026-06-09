@@ -3,6 +3,39 @@ import { useParams, useNavigate } from "react-router-dom";
 import { getCanonicalDocumentDetail, getExtractionRunsByCanonicalId } from "../services/paperApi.js";
 import { AppHeader } from "../components/AppHeader.jsx";
 
+function formatCrossrefValue(value) {
+  if (value == null || value === "") return "-";
+  if (Array.isArray(value)) {
+    return value.length ? value.join(", ") : "-";
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function formatCrossrefField(field) {
+  if (!field) return "-";
+  const score = field.score == null ? "" : ` (${Number(field.score).toFixed(3)})`;
+  return `${field.status || "-"}${score}`;
+}
+
+function CrossrefMetadataRow({ label, value, field }) {
+  return (
+    <div className="crossref-metadata__row">
+      <dt>{label}</dt>
+      <dd>
+        <span className="crossref-metadata__value">{formatCrossrefValue(value)}</span>
+        {field && (
+          <span className={`crossref-metadata__status crossref-metadata__status--${field.status || "unknown"}`}>
+            {formatCrossrefField(field)}
+          </span>
+        )}
+      </dd>
+    </div>
+  );
+}
+
 export function CanonicalDocumentDetailPage() {
   const { canonicalId } = useParams();
   const navigate = useNavigate();
@@ -56,7 +89,7 @@ export function CanonicalDocumentDetailPage() {
         return authors.map(author => author.name || author).join(", ");
       }
       return authors;
-    } catch (error) {
+    } catch {
       return authorsJson;
     }
   }
@@ -64,36 +97,50 @@ export function CanonicalDocumentDetailPage() {
   function formatMetadataSource(source) {
     if (!source) return "-";
     if (source === "semantic_scholar") return "Semantic Scholar";
+    if (source === "crossref") return "Crossref";
     return source;
+  }
+
+  function formatCrossrefStatus(status) {
+    switch (status) {
+      case "verified":
+        return "Verified";
+      case "partial":
+        return "Partial";
+      case "weak":
+        return "Weak";
+      case "conflict":
+        return "Conflict";
+      case "not_found":
+        return "Not found";
+      case "rate_limited":
+        return "Rate limited";
+      case "error":
+        return "Error";
+      default:
+        return "-";
+    }
   }
 
   function getBadgeColor(status) {
     switch (status) {
       case "matched":
+      case "matched_by_doi":
+      case "matched_by_title":
+      case "matched_by_crossref":
+      case "matched_by_crossref_doi":
+      case "matched_by_crossref_title":
+      case "enriched":
         return "#22c55e";
       case "unmatched":
+      case "crossref_rate_limited":
+      case "rate_limited":
         return "#f59e0b";
       case "error":
         return "#ef4444";
       default:
         return "#22c55e"; // Default to green for enriched/matched
     }
-  }
-
-  function formatLLMProvider(provider, modelName) {
-    const normalizedProvider = (provider || "").toLowerCase();
-    const normalizedModel = (modelName || "").toLowerCase();
-
-    if (normalizedProvider === "regex_parsing") return "Regex parsing";
-    if (normalizedProvider === "gemini") return "Gemini";
-    if (normalizedProvider === "ollama" && normalizedModel.includes("gemma")) {
-      return "Gemma (Ollama)";
-    }
-    if (normalizedProvider === "ollama") return "Ollama";
-    if (provider) return provider;
-    if (normalizedModel.includes("gemini")) return "Gemini";
-    if (normalizedModel.includes("gemma")) return "Gemma";
-    return "-";
   }
 
   if (loading) {
@@ -168,6 +215,9 @@ export function CanonicalDocumentDetailPage() {
       </div>
     );
   }
+
+  const crossrefMetadata = document.crossref_metadata_json || document.crossref_verification_json?.crossref_metadata;
+  const crossrefFields = document.crossref_verification_json?.fields || {};
 
   return (
     <div className="app-shell">
@@ -341,7 +391,59 @@ export function CanonicalDocumentDetailPage() {
                     <dt>Sematic Scholar Match Confidence:</dt>
                     <dd>{document.ss_match_confidence || "-"}</dd>
                   </div>
+                  <div className="detail-list__item">
+                    <dt>Crossref Verification:</dt>
+                    <dd>{formatCrossrefStatus(document.crossref_match_status)}</dd>
+                  </div>
+                  <div className="detail-list__item">
+                    <dt>Crossref Confidence:</dt>
+                    <dd>{document.crossref_match_confidence || "-"}</dd>
+                  </div>
                 </dl>
+              </div>
+
+              <div className="detail-section">
+                <h3 className="detail-section__title">Crossref returned metadata</h3>
+                {crossrefMetadata ? (
+                  <dl className="crossref-metadata__list">
+                    <CrossrefMetadataRow
+                      label="DOI"
+                      value={crossrefMetadata.doi}
+                      field={crossrefFields.doi}
+                    />
+                    <CrossrefMetadataRow
+                      label="Title"
+                      value={crossrefMetadata.title}
+                      field={crossrefFields.title}
+                    />
+                    <CrossrefMetadataRow
+                      label="Authors"
+                      value={crossrefMetadata.authors}
+                      field={crossrefFields.authors}
+                    />
+                    <CrossrefMetadataRow
+                      label="Year"
+                      value={crossrefMetadata.year}
+                      field={crossrefFields.year}
+                    />
+                    <CrossrefMetadataRow
+                      label="Venue"
+                      value={crossrefMetadata.venue}
+                      field={crossrefFields.venue}
+                    />
+                    <CrossrefMetadataRow
+                      label="Abstract"
+                      value={crossrefMetadata.abstract}
+                      field={crossrefFields.abstract}
+                    />
+                    <CrossrefMetadataRow label="Type" value={crossrefMetadata.type} />
+                    <CrossrefMetadataRow label="URL" value={crossrefMetadata.url} />
+                  </dl>
+                ) : (
+                  <div style={{ color: "#6b7280", fontSize: "0.85rem" }}>
+                    No Crossref metadata returned.
+                  </div>
+                )}
               </div>
 
               {/* Timestamp Information */}
@@ -359,8 +461,8 @@ export function CanonicalDocumentDetailPage() {
                 </dl>
               </div>
 
-              {/* Extraction Runs */}
-              <div className="detail-section">
+              {/* Extraction Runs — cột phải, dưới Thời gian */}
+              <div className="detail-section" style={{ gridColumn: 2 }}>
                 <h3 className="detail-section__title">
                   Quá trình trích xuất
                 </h3>
@@ -372,7 +474,7 @@ export function CanonicalDocumentDetailPage() {
                       flexWrap: "wrap",
                       gap: "1rem",
                       justifyContent: "center",
-                    alignItems: "center"
+                      alignItems: "center",
                     }}
                   >
                     {extractionRuns.map((run) => (
@@ -381,22 +483,21 @@ export function CanonicalDocumentDetailPage() {
                         className="btn btn--primary"
                         style={{
                           padding: "0.75rem 1.5rem",
-                          borderRadius: "10px"
+                          borderRadius: "10px",
                         }}
                         onClick={() =>
                           navigate(`/extraction-runs/${run.id}`)
                         }
                       >
-                        Xem chi tiết quá trình trích xuất 
+                        Xem chi tiết quá trình trích xuất
                       </button>
                     ))}
                   </div>
                 ) : (
                   <div
                     style={{
-                      padding: "2rem",
-                      textAlign: "center",
-                      color: "#6b7280"
+                      padding: "1rem 0",
+                      color: "#6b7280",
                     }}
                   >
                     Không có quá trình trích xuất nào.
